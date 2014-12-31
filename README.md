@@ -10,12 +10,17 @@ create the art, then manually create the orientation of the tiles in the second 
 
 Currently, it will do the following:
 1. Import a series of images by a (glob) pattern.  The pattern can be "*.png", or include a full path with wildcards.
+
 2. Verify all the images are the same size.
+
 3. Verify they are an even multiple of the tileWidth and tileHeight.
+
 4. Chop up the images into a tileset of tileWidth x tileHeight size, removing duplicates.  Duplicates are
    checked based on the eight cardinal "flips" that Tiled uses (flipX, flipY, flipDiagonal).  It will also
    remove transparent tiles.
+
 5. Generate an output tileset (named as an input).
+
 6. Generate an output Tiled file (named as an input).
 
 See the notes on check-ins to see future work and plans.
