@@ -277,7 +277,7 @@ class MapTiler(object):
                         print "[%5.1f%% Complete] [%5.1f%% Eff] Layer %s, Index %d (%d,%d) maps onto image %d, xForm %d." % (
                             100 * tilesProcessed / tilesToProcess,
                             100 * (1.0 - self.tilesCreated * 1.0 / self.tilesPossible),
-                            lname, idx, row, col, desIdx, xForm )
+                            lname, idx, row, col, lastTileMatchIndex, xForm )
                     continue
 
                 for desIdx in self.imageDict.keys():
