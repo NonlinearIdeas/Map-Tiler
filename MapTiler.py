@@ -28,17 +28,22 @@
 """
 Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--tileHeight=HEIGHT]
+                    [--tileOffX=OFFX]
+                    [--tileOffY=OFFY]
+                    [--tileInsetX=INSETX]
+                    [--tileInsetY=INSETY]
                     [--filePattern=PATTERN]
                     [--outTileset=OUTTILESET]
                     [--outTiled=OUTTILED]
                     [--forceSquareTileset]
+                    [--verbose]
                     [<layerImage>...]
 
 Arguments:
 
 
 Options:
-    layerImage                 A list of image files to be used as
+    layerImage                  A list of image files to be used as
                                 inputs.  They will be processed and
                                 placed into the .tmx file in the
                                 order entered.  Or sorted if a
@@ -47,6 +52,18 @@ Options:
                                 [Default: 64]
     --tileHeight=HEIGHT         The tile height in pixels.
                                 [Default: 64]
+    --tileOffX=OFFX             Offset pixels in the image in the
+                                horizontal direction.  May NOT
+                                be negative.
+                                [Default: 0]
+    --tileOffY=OFFY             Offset pixels in the image in the
+                                vertical direction.  May NOT
+                                be negative.
+                                [Default: 0]
+    --tileInsetX=INSETX         Offset pixels from the right edge.
+                                [Default: 0]
+    --tileInsetY=INSETY         Offset pixels from the bottom edge.
+                                [Default: 0]
     --filePattern=PATTERN       A glob pattern for image files.
     --outTileset=OUTTILESET     The output tileset image file.
                                 [Default: tileset.png]
@@ -55,6 +72,8 @@ Options:
     --forceSquareTileset        If present, the tileset image will be
                                 a square image.  The output tileset image
                                 is always a power of 2 in size.
+    --verbose                   If present, give output while working.
+
 
 Website:        http://www.NonlinearIdeas.com
 Repository:     https://github.com/NonlinearIdeas/Map-Tiler
@@ -72,6 +91,7 @@ import ImageChops
 from lxml import etree
 import docopt
 import math
+import datetime
 
 
 class MapTiler(object):
@@ -164,7 +184,7 @@ class MapTiler(object):
 
     def CheckImageSizes(self):
         # Open the first file and get its size.
-        imgFile = Image.open(self.layerFiles[0])
+        imgFile = self.LoadCroppedImage(self.layerFiles[0])
         imageWidth, imageHeight = imgFile.size
         if imageWidth % self.tileWidth != 0:
             print "File %s's Width %d cannot be divided evenly by tile width %d." % (
@@ -181,7 +201,7 @@ class MapTiler(object):
         self.layerHeight = imageHeight / self.tileHeight
         self.layerTiles = self.layerWidth * self.layerHeight
         for other in self.layerFiles[1:]:
-            imgFile = Image.open(other)
+            imgFile = self.LoadCroppedImage(other)
             width, height = imgFile.size
             if width != self.imageWidth or height != self.imageHeight:
                 print "Image %s Size (%d x %d) does not match base size (%d x %d)" % (
@@ -211,43 +231,84 @@ class MapTiler(object):
     def ExtractSubimage(self, im, index):
         rect = self.CalculateSubimageRect(index)
         ex = im.crop(rect)
-        ex.load()
         return ex
 
     def CreateTileset(self):
         self.imageDict = {}
         self.layerDict = {}
+        self.tilesCreated = 0
+        self.tilesPossible = 0
         # Create an empty tile.
         # There is almost ALWAYS at least one of these.
         emptyTile = Image.new('RGBA', (self.tileWidth, self.tileHeight ), (0, 0, 0, 0))
         self.imageDict[0] = emptyTile
-        self.emptyTileIndex = 0
+        self.tilesCreated += 1
         subimgIdx = 1
-        emptyImgIdx = None
+        tilesToProcess = len(self.layerFiles)*self.layerTiles
+        tilesProcessed = 0
+        lastTileMatchIndex = 0
         for fname in self.layerFiles:
             lname = os.path.split(fname)[1]
             lname = os.path.splitext(lname)[0]
-            print "Creating Subimages for layer %s" % lname
+            if self.verbose:
+                print "Creating Subimages for layer %s" % lname
             self.layerDict[lname] = {}
-            img = Image.open(fname)
+            img = self.LoadCroppedImage(fname)
+            foundXform = False
             for idx in xrange(self.layerTiles):
                 subimg = self.ExtractSubimage(img, idx)
                 foundXform = False
                 row, col = self.CalculateImageRowCell(idx)
+                self.tilesPossible += 1
+                tilesProcessed += 1
+                # A slight optimization here.  Tiles are being scanned
+                # horizontally and they often repeat.  The last tile is
+                # a good candidate for a match, so check this one first.
+                # Some "Results"
+                # Processing a small map (JanHouse.png) changed the process time from 8 seconds to 6 seconds.
+                # Processing a large mpa (kmare.png) changed the process time from 14:51 to 8:48.
+                #
+                # This approach appears to have some merit.
+                #
+                xForm = self.FindImageTransformation(subimg, self.imageDict[lastTileMatchIndex])
+                if xForm != None:
+                    self.layerDict[lname][idx] = (lastTileMatchIndex, xForm)
+                    if self.verbose:
+                        print "[%5.1f%% Complete] [%5.1f%% Eff] Layer %s, Index %d (%d,%d) maps onto image %d, xForm %d." % (
+                            100 * tilesProcessed / tilesToProcess,
+                            100 * (1.0 - self.tilesCreated * 1.0 / self.tilesPossible),
+                            lname, idx, row, col, desIdx, xForm )
+                    continue
+
                 for desIdx in self.imageDict.keys():
+                    # Already checked this one.
+                    if desIdx == lastTileMatchIndex:
+                        continue
                     xForm = self.FindImageTransformation(subimg, self.imageDict[desIdx])
                     if xForm != None:
                         # We have an equivalent transformation
                         self.layerDict[lname][idx] = (desIdx, xForm)
-                        # print "Layer %s, Index %d (%d,%d) maps onto image %d, xForm %d."%(lname,idx,row,col,desIdx,xForm )
+                        if self.verbose:
+                            print "[%5.1f%% Complete] [%5.1f%% Eff] Layer %s, Index %d (%d,%d) maps onto image %d, xForm %d."%(
+                                100*tilesProcessed/tilesToProcess,
+                                100*(1.0-self.tilesCreated*1.0/self.tilesPossible),
+                                lname,idx,row,col,desIdx,xForm )
                         foundXform = True
+                        lastTileMatchIndex = desIdx
                         break
+
                 if not foundXform:
                     # Keep this one.
                     self.imageDict[subimgIdx] = subimg
                     self.layerDict[lname][idx] = (subimgIdx, 0)
-                    # print "Layer %s, Index %d (%d,%d) is a new image."%(lname,idx,row,col)
+                    if self.verbose:
+                        print "[%5.1f%% Complete] [%5.1f%% Eff] Layer %s, Index %d (%d,%d) is a new image."%(
+                            100.0 * tilesProcessed / tilesToProcess,
+                            100 * (1.0 - self.tilesCreated * 1.0 / self.tilesPossible),
+                            lname,idx,row,col)
                     # Increment the subimage index for the next one.
+                    lastTileMatchIndex = subimgIdx
+                    self.tilesCreated += 1
                     subimgIdx += 1
         return True
 
@@ -291,6 +352,9 @@ class MapTiler(object):
                 im2 = im2.transpose(Image.ROTATE_180)
             elif rot90 == 3:
                 im2 = im2.transpose(Image.ROTATE_270)
+            if im1org.size != im2.size:
+                # Don't compare images that are not the same size.
+                continue
             if ImageChops.difference(im1org, im2).getbbox() is None:
                 # They are the same now
                 return xForm
@@ -319,9 +383,12 @@ class MapTiler(object):
         imageHeight = imageDimHeight * self.tileHeight
         self.tilesetWidth = imageWidth
         self.tilesetHeight = imageHeight
-        print "For %d tiles, the image size will be %d x %d tiles (%d x %d pixels)" % (
-            tileCount, imageDimWidth, imageDimHeight, imageWidth, imageHeight
-        )
+        print "For %d tiles, the image size will be %d x %d tiles (%d x %d pixels)." % (
+            tileCount, imageDimWidth, imageDimHeight, imageWidth, imageHeight)
+        print "Efficiency = 100%%(1-Tiles Created / Tiles Possible) => 100%%(1-%d/%d) = %4.1f%%."%(
+            self.tilesCreated,
+            self.tilesPossible,
+            100*(1.0-self.tilesCreated*1.0/self.tilesPossible))
         # Create the output image
         imgOut = Image.new('RGBA', (imageWidth, imageHeight), (0, 0, 0, 0))
         for idx in xrange(tileCount):
@@ -334,6 +401,18 @@ class MapTiler(object):
             imgOut.paste(self.imageDict[idx], (x0, y0, x1, y1))
         print "Saving tileset to %s." % self.outTilesetFile
         imgOut.save(self.outTilesetFile)
+
+    def LoadCroppedImage(self,fileName):
+        image = Image.open(fileName)
+        w, h = image.size
+        x0 = self.tileOffX
+        y0 = self.tileOffY
+        x1 = w - self.tileInsetX
+        y1 = h - self.tileInsetY
+        img = image.crop((x0, y0, x1, y1))
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        return img
 
     def ExportTiledFile(self):
         # Build the root node ("map")
@@ -381,19 +460,35 @@ class MapTiler(object):
         outTree.write(self.outTiledFile, encoding="UTF-8", xml_declaration=True, pretty_print=True)
         print "Saving tiled file to %s." % self.outTiledFile
 
+    def SecondsToHMS(self,seconds):
+        hours = divmod(seconds, 3600)  # hours
+        minutes = divmod(hours[1], 60)  # minutes
+        return (hours[0],minutes[0],minutes[1])
+
     def ProcessInputs(self,
                       tileWidth=64,
                       tileHeight=64,
+                      tileOffX = 0,
+                      tileOffY = 0,
+                      tileInsetX = 0,
+                      tileInsetY = 0,
                       fileList = [],
                       inputFilePattern="*.png",
                       outTilesetFile="tileset.png",
                       outTiledFile="tiled.tmx",
-                      forceSquareTileset=True):
+                      forceSquareTileset=True,
+                      verbose = False):
+        self.tileOffX = tileOffX
+        self.tileOffY = tileOffY
+        self.tileInsetX = tileInsetX
+        self.tileInsetY = tileInsetY
         self.tileWidth = tileWidth
         self.tileHeight = tileHeight
         self.outTilesetFile = outTilesetFile
         self.outTiledFile = outTiledFile
         self.forceSquareTileset = forceSquareTileset
+        self.verbose = verbose
+        self.startTime = datetime.datetime.now()
         if not self.CreateLayerFiles(inputFilePattern,fileList):
             return False
         if not self.CheckImageSizes():
@@ -403,10 +498,33 @@ class MapTiler(object):
         # self.DumpTilemap()
         self.ExportTileset()
         self.ExportTiledFile()
+        self.stopTime = datetime.datetime.now()
+        totalSeconds = (self.stopTime-self.startTime).total_seconds()
+        h,m,s = self.SecondsToHMS(totalSeconds)
+        print "Started: ",self.startTime
+        print "Stopped: ",self.stopTime
+        print "Total Run Time: [%d Hrs: %d Min: %d Sec]"%(h,m,s)
         return True
 
 if __name__ == "__main__":
     arguments = docopt.docopt(__doc__)
+    # When testing is done, this is where
+    # test arguments are inserted.
+    """
+    arguments["<layerImage>"] = ["JansHouse.png"]
+    arguments["--tileWidth"] = "8"
+    arguments["--tileHeight"] = "8"
+    arguments["--tileInsetY"] = "0"
+    arguments["--verbose"] = True
+    """
+
+    """
+    arguments["<layerImage>"] = ["kmare.png"]
+    arguments["--tileWidth"] = "16"
+    arguments["--tileHeight"] = "16"
+    arguments["--tileInsetY"] = "5"
+    arguments["--verbose"] = True
+    """
     print "-----------------------------------"
     print "Inputs:"
     args = arguments.keys()
@@ -416,12 +534,22 @@ if __name__ == "__main__":
     print "-----------------------------------"
     tileWidth = int(arguments['--tileWidth'])
     tileHeight = int(arguments['--tileHeight'])
+    tileOffX = int(arguments['--tileOffX'])
+    tileOffY = int(arguments['--tileOffY'])
+    tileInsetX = int(arguments['--tileInsetX'])
+    tileInsetY = int(arguments['--tileInsetY'])
     outTiled = arguments['--outTiled']
     outTileset = arguments['--outTileset']
-    fileNames = arguments["<layerImage>"]
     filePattern = arguments["--filePattern"]
     forceSquareTileset = arguments['--forceSquareTileset']
     fileList = arguments["<layerImage>"]
+    verbose = arguments['--verbose']
     # Now execute the parser
     parser = MapTiler()
-    parser.ProcessInputs(tileWidth,tileHeight,fileList,filePattern,outTileset,outTiled)
+    parser.ProcessInputs(tileWidth,tileHeight,
+                         tileOffX,tileOffY,
+                         tileInsetX,tileInsetY,
+                         fileList,filePattern,
+                         outTileset,outTiled,
+                         forceSquareTileset,
+                         verbose)
