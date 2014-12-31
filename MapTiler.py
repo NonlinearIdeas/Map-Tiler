@@ -1,17 +1,76 @@
-# Filename  : MapTiler.py
-# Author    : James Wucher
-# Version   : 1.0
-# Date      : January 1, 2015 (Happy New Year!!!)
-# Copyright : Public Domain
+# -------------------------------------------------------------
+# License
+# -------------------------------------------------------------
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated
+# documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to
+# whom the Software is furnished to do so, subject to the
+# following conditions:
+#
+# The above copyright notice and this permission notice shall
+# be included in all copies or substantial portions of the
+# Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+# PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+# OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# -------------------------------------------------------------
 
 
-__author__ = 'James Wucher'
+"""
+Usage: MapTiler.py  [--tileWidth=WIDTH]
+                    [--tileHeight=HEIGHT]
+                    [--filePattern=PATTERN]
+                    [--outTileset=OUTTILESET]
+                    [--outTiled=OUTTILED]
+                    [--forceSquareTileset]
+                    [<layerImage>...]
+
+Arguments:
+
+
+Options:
+    layerImage                 A list of image files to be used as
+                                inputs.  They will be processed and
+                                placed into the .tmx file in the
+                                order entered.  Or sorted if a
+                                search pattern is used.
+    --tileWidth=WIDTH           The tile width in pixels.
+                                [Default: 64]
+    --tileHeight=HEIGHT         The tile height in pixels.
+                                [Default: 64]
+    --filePattern=PATTERN       A glob pattern for image files.
+    --outTileset=OUTTILESET     The output tileset image file.
+                                [Default: tileset.png]
+    --outTiled=OUTTILED         The output Tiled file in .tmx format.
+                                [Default: tiled.tmx]
+    --forceSquareTileset        If present, the tileset image will be
+                                a square image.  The output tileset image
+                                is always a power of 2 in size.
+
+Website:        http://www.NonlinearIdeas.com
+Repository:     https://github.com/NonlinearIdeas/Map-Tiler
+Report Issues:  https://github.com/NonlinearIdeas/Map-Tiler
+License:        MIT License - See specific text in source code.
+Copyright:      Copyright (c) 2014 Nonlinear Ideas Inc (contact@nlideas.com)
+"""
+
+
 
 import glob
 import os
 import Image
 import ImageChops
 from lxml import etree
+import docopt
 import math
 
 
@@ -55,6 +114,10 @@ class MapTiler(object):
     }
 
 
+    def __init__(self):
+        pass
+
+
     # Updates the gid for a tile based on the rotation
     # and flipX flag passed in from the PyxelEdit element.
     def UpdateGIDForRotation(self, gid, xForm):
@@ -71,29 +134,29 @@ class MapTiler(object):
             gid += FLIPPED_DIAGONALLY_FLAG
         return gid
 
-    def __init__(self):
-        self.layerFiles = []
-        self.layerNames = []
-        # The program breaks down the raw layer images into tiles
-        # and stores all of them in the imageDict.  The layerDict
-        # has a key for each layer file and a dictionary by tile
-        # index for each tile in that layer.  The final element is a
-        # tuple with the imageDict index and a rotation value.
-        #
-        # The initial sweep through the layers creates a set of
-        # subimages for each layer as a potential tileset.  The
-        # next sweep merges duplicates, replacing the references
-        # in the layerDict.
-        self.imageDict = {}
-        self.layerDict = {}
 
-    def CreateLayerFiles(self):
-        files = glob.glob(self.inputFilePattern)
-        if len(files) == 0:
-            print "No files found matching pattern %s." % self.inputFilePattern
+    def CreateLayerFiles(self, inputFilePattern = None, fileList = []):
+        if inputFilePattern:
+            files = glob.glob(inputFilePattern)
+            if len(files) == 0:
+                print "No files found matching pattern %s." % self.inputFilePattern
+                print "Unable to continue."
+                return False
+            else:
+                files.sort()
+                fileList += files
+        # If there are no files to process, we are done.
+        if len(fileList) == 0:
+            print "No files to process."
             print "Unable to continue."
             return False
-        for file in files:
+        self.layerFiles = []
+        self.layerNames = []
+        for file in fileList:
+            if not os.path.exists(file):
+                print "File %s does not exist."%file
+                print "Unable to coninue."
+                return False
             if file != self.outTilesetFile:
                 self.layerFiles.append(file)
                 self.layerNames.append(os.path.splitext(os.path.split(file)[1])[0])
@@ -296,9 +359,7 @@ class MapTiler(object):
         imgElem.attrib["height"] = "%s" % self.tilesetHeight
 
         # Now iterate over the layers and pull out each one.
-        lnames = self.layerDict.keys()
-        lnames.sort()
-        for lname in lnames:
+        for lname in self.layerNames:
             layer = etree.SubElement(outRoot, "layer")
             layer.attrib["name"] = lname
             layer.attrib["width"] = "%s" % self.layerWidth
@@ -323,17 +384,17 @@ class MapTiler(object):
     def ProcessInputs(self,
                       tileWidth=64,
                       tileHeight=64,
+                      fileList = [],
                       inputFilePattern="*.png",
                       outTilesetFile="tileset.png",
                       outTiledFile="tiled.tmx",
                       forceSquareTileset=True):
-        self.inputFilePattern = inputFilePattern
         self.tileWidth = tileWidth
         self.tileHeight = tileHeight
         self.outTilesetFile = outTilesetFile
         self.outTiledFile = outTiledFile
         self.forceSquareTileset = forceSquareTileset
-        if not self.CreateLayerFiles():
+        if not self.CreateLayerFiles(inputFilePattern,fileList):
             return False
         if not self.CheckImageSizes():
             return False
@@ -344,6 +405,23 @@ class MapTiler(object):
         self.ExportTiledFile()
         return True
 
-
-creator = MapTiler()
-creator.ProcessInputs(32, 32)
+if __name__ == "__main__":
+    arguments = docopt.docopt(__doc__)
+    print "-----------------------------------"
+    print "Inputs:"
+    args = arguments.keys()
+    args.sort()
+    for arg in args:
+        print "%-25s %s"%(arg,arguments[arg])
+    print "-----------------------------------"
+    tileWidth = int(arguments['--tileWidth'])
+    tileHeight = int(arguments['--tileHeight'])
+    outTiled = arguments['--outTiled']
+    outTileset = arguments['--outTileset']
+    fileNames = arguments["<layerImage>"]
+    filePattern = arguments["--filePattern"]
+    forceSquareTileset = arguments['--forceSquareTileset']
+    fileList = arguments["<layerImage>"]
+    # Now execute the parser
+    parser = MapTiler()
+    parser.ProcessInputs(tileWidth,tileHeight,fileList,filePattern,outTileset,outTiled)
