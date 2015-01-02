@@ -37,9 +37,11 @@ Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--outTiled=OUTTILED]
                     [--forceSquareTileset]
                     [--verbose]
+                    [--overwriteExisting]
+                    [--mergeExisting]
                     [<layerImage>...]
 
-Arguments:
+Argumnts:
 
 
 Options:
@@ -73,7 +75,36 @@ Options:
                                 a square image.  The output tileset image
                                 is always a power of 2 in size.
     --verbose                   If present, give output while working.
+    --overwriteExisting         Overwrite output files with new files.
 
+    --mergeExisting             Overwrite the tileset file and attempt
+                                to merges the layers in the new file
+                                with the existing file.  See below.
+
+
+The script will check if the output files exist first.  The default
+behavior IS TO FAIL if they do.  This is to prevent you from accidentally
+overwriting your data files.
+
+If the --overwriteExisting flag is set, the existing files will be overwritten
+without checking.  If the --mergeExisting option is set, the script will
+overwrite the tile set and attempt to merge the tiled file. Ther merge will
+fail if the width/height in tiles of the layers has changed.
+
+When failing, the original files will be preserved.
+
+The merge operation ONLY merges new layers into the existing
+file.  It does this by iterating through the existing <data>
+tag of the layer (if it can find it) and updating each <tile>
+element with the gid of the element from the new set.  Otherwise,
+it does not touch ANY DATA.  If it cannot find the layer in the
+existing file, it is added.
+
+If you have other tilesets in the
+existing file with a gid = "1", this operation will generate
+bad results.
+
+The --overwriteExisting and --mergeExisting are mutually exclusive.
 
 Website:        http://www.NonlinearIdeas.com
 Repository:     https://github.com/NonlinearIdeas/Map-Tiler
@@ -401,6 +432,7 @@ class MapTiler(object):
             imgOut.paste(self.imageDict[idx], (x0, y0, x1, y1))
         print "Saving tileset to %s." % self.outTilesetFile
         imgOut.save(self.outTilesetFile)
+        return True
 
     def LoadCroppedImage(self,fileName):
         image = Image.open(fileName)
@@ -414,7 +446,7 @@ class MapTiler(object):
             img = img.convert("RGBA")
         return img
 
-    def ExportTiledFile(self):
+    def CreateTiledFile(self):
         # Build the root node ("map")
         outRoot = etree.Element("map")
         outRoot.attrib["version"] = "1.0"
@@ -439,31 +471,123 @@ class MapTiler(object):
 
         # Now iterate over the layers and pull out each one.
         for lname in self.layerNames:
-            layer = etree.SubElement(outRoot, "layer")
-            layer.attrib["name"] = lname
-            layer.attrib["width"] = "%s" % self.layerWidth
-            layer.attrib["height"] = "%s" % self.layerHeight
-            data = etree.SubElement(layer, "data")
-            # In each layer, there are width x height tiles.
-            for idx in xrange(self.layerTiles):
-                tile = etree.SubElement(data, "tile")
-                gid, xForm = self.layerDict[lname][idx]
-                if (gid == 0):
-                    # This is the "empty" tile
-                    tile.attrib["gid"] = "0"
-                else:
-                    tile.attrib["gid"] = str(self.UpdateGIDForRotation(gid + 1, xForm))
-
+            self.CreateXMLLayer(outRoot,lname)
         outTree = etree.ElementTree(outRoot)
+        return outTree
+
+    def CreateXMLLayer(self,outRoot,layerName):
+        layer = etree.SubElement(outRoot, "layer")
+        layer.attrib["name"] = layerName
+        layer.attrib["width"] = "%s" % self.layerWidth
+        layer.attrib["height"] = "%s" % self.layerHeight
+        data = etree.SubElement(layer, "data")
+        # In each layer, there are width x height tiles.
+        for idx in xrange(self.layerTiles):
+            tile = etree.SubElement(data, "tile")
+            gid, xForm = self.layerDict[layerName][idx]
+            if (gid == 0):
+                # This is the "empty" tile
+                tile.attrib["gid"] = "0"
+            else:
+                tile.attrib["gid"] = str(self.UpdateGIDForRotation(gid + 1, xForm))
+
+    def MergeTiledFiles(self):
+        outTree = etree.parse(self.outTiledFile)
+        outRoot = outTree.getroot()
+        # Find all the layers in the output tree
+        layers = outRoot.findall("layer")
+        outLayers = { layer.attrib['name']:layer for layer in layers }
+        # For every layer that already exists, just update the GID data.
+        # Otherwise, add a new layer to the tree with the data.
+        for lname in self.layerNames:
+            if lname in outLayers:
+                if self.verbose:
+                    print "Layer %s will be updated."%lname
+                data = outLayers[lname].find("data")
+                tiles = data.findall("tile")
+                for idx in xrange(len(tiles)):
+                    tile = tiles[idx]
+                    gid, xForm = self.layerDict[lname][idx]
+                    if (gid == 0):
+                        # This is the "empty" tile
+                        tile.attrib["gid"] = "0"
+                    else:
+                        tile.attrib["gid"] = str(self.UpdateGIDForRotation(gid + 1, xForm))
+            else:
+                # Regardless of "verbosity", let the user know we are
+                # adding a whole new layer to their map.
+                print "Layer %s DOES NOT EXIST in the existing file will be added."%lname
+                self.CreateXMLLayer(outRoot, lname)
+        return outTree
+
+    def ExportTiledFile(self):
         if os.path.exists(self.outTiledFile):
-            os.remove(self.outTiledFile)
+            if self.mergeExisting:
+                outTree = self.MergeTiledFiles()
+            else:
+                # Not merging, just overwriting
+                outTree = self.CreateTiledFile()
+        else:
+            outTree = self.CreateTiledFile()
         outTree.write(self.outTiledFile, encoding="UTF-8", xml_declaration=True, pretty_print=True)
         print "Saving tiled file to %s." % self.outTiledFile
+        return True
 
     def SecondsToHMS(self,seconds):
         hours = divmod(seconds, 3600)  # hours
         minutes = divmod(hours[1], 60)  # minutes
         return (hours[0],minutes[0],minutes[1])
+
+    # If a merge operation is going to happen, check the existing file
+    # and find out the layer width/height in tiles.  If it is not the
+    # same, abort the operation.  We could check this at the end, but
+    # this would mean the tile set has been created, and that could
+    # take a while.
+    def CheckMergingFiles(self):
+        if not os.path.exists(self.outTiledFile):
+            # If the file does not exist, there is nto a problem.
+            return True
+        if not self.mergeExisting:
+            # If we are not merging, there is not a problem.
+            return True
+        # Load the file and pull out the tile width/height.
+        inTree = etree.parse(self.outTiledFile)
+        inRoot = inTree.getroot()
+        layerWidth = int(inRoot.attrib["width"])
+        layerHeight = int(inRoot.attrib["height"])
+        if layerWidth != self.layerWidth:
+            print "Layer width in existing %s = %d which does not match new configuration width %d."%(
+                self.outTiledFile,
+                layerWidth,
+                self.layerWidth)
+            print "Unable to continue."
+            return False
+        if layerHeight != self.layerHeight:
+            print "Layer height in existing %s = %d which does not match new configuration width %d." % (
+                self.outTiledFile,
+                layerHeight,
+                self.layerHeight)
+            print "Unable to continue."
+            return False
+        return True
+
+
+    def CheckExistingFiles(self):
+        if self.mergeExisting and self.overwriteExisting:
+            print "Cannot have options to merge and overwrite existing files."
+            print "Unable to continue."
+            return False
+        if os.path.exists(self.outTilesetFile):
+            if not self.mergeExisting and not self.overwriteExisting:
+                print "Output %s exists and would be modified.  Use options to control this."%self.outTilesetFile
+                print "Unable to continue."
+                return False
+        if os.path.exists(self.outTiledFile):
+            if not self.mergeExisting and not self.overwriteExisting:
+                print "Output %s exists and would be modified.  Use options to control this."%self.outTiledFile
+                print "Unable to continue."
+                return False
+        return True
 
     def ProcessInputs(self,
                       tileWidth=64,
@@ -477,7 +601,9 @@ class MapTiler(object):
                       outTilesetFile="tileset.png",
                       outTiledFile="tiled.tmx",
                       forceSquareTileset=True,
-                      verbose = False):
+                      verbose = False,
+                      mergeExisting = False,
+                      overwriteExisting = False):
         self.tileOffX = tileOffX
         self.tileOffY = tileOffY
         self.tileInsetX = tileInsetX
@@ -488,16 +614,28 @@ class MapTiler(object):
         self.outTiledFile = outTiledFile
         self.forceSquareTileset = forceSquareTileset
         self.verbose = verbose
+        self.mergeExisting = mergeExisting
+        self.overwriteExisting = overwriteExisting
         self.startTime = datetime.datetime.now()
+
+        # Main execution path
+        if not self.CheckExistingFiles():
+            return False
         if not self.CreateLayerFiles(inputFilePattern,fileList):
             return False
         if not self.CheckImageSizes():
             return False
+        if not self.CheckMergingFiles():
+            return False
         if not self.CreateTileset():
             return False
         # self.DumpTilemap()
-        self.ExportTileset()
-        self.ExportTiledFile()
+        if not self.ExportTileset():
+            return False
+        if not self.ExportTiledFile():
+            return False
+
+        # Report execution time.
         self.stopTime = datetime.datetime.now()
         totalSeconds = (self.stopTime-self.startTime).total_seconds()
         h,m,s = self.SecondsToHMS(totalSeconds)
@@ -510,6 +648,14 @@ if __name__ == "__main__":
     arguments = docopt.docopt(__doc__)
     # When testing is done, this is where
     # test arguments are inserted.
+    """
+    arguments["<layerImage>"] = ["Floor.png", "Walls.png", "Objects.png", "Doors.png" ]
+    arguments["--tileWidth"] = "32"
+    arguments["--tileHeight"] = "32"
+    arguments["--verbose"] = True
+    arguments["--mergeExisting"] = True
+    """
+
     """
     arguments["<layerImage>"] = ["JansHouse.png"]
     arguments["--tileWidth"] = "8"
@@ -544,6 +690,8 @@ if __name__ == "__main__":
     forceSquareTileset = arguments['--forceSquareTileset']
     fileList = arguments["<layerImage>"]
     verbose = arguments['--verbose']
+    mergeExisting = arguments['--mergeExisting']
+    overwriteExisting = arguments['--overwriteExisting']
     # Now execute the parser
     parser = MapTiler()
     parser.ProcessInputs(tileWidth,tileHeight,
@@ -552,4 +700,6 @@ if __name__ == "__main__":
                          fileList,filePattern,
                          outTileset,outTiled,
                          forceSquareTileset,
-                         verbose)
+                         verbose,
+                         mergeExisting,
+                         overwriteExisting)
