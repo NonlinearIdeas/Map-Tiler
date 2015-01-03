@@ -35,6 +35,7 @@ Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--filePattern=PATTERN]
                     [--floorLayer=FLOORLAYER]
                     [--wallLayer=WALLLAYER]
+                    [--portalLayer=PORTALLAYER]
                     [--doorLayer=DOORLAYER]
                     [--addNavLayers]
                     [--forceSquareTileset]
@@ -83,11 +84,13 @@ Options:
                                 used in nav map generation.  See below.
     --wallLayer=WALLLAYER       Define the name for the wall layer to be
                                 used in nav map generation.  See below.
-    --doorLayer=DOORLAYER       Define the name for the door layer to be
+    --portalLayer=PORTALLAYER   Define the name for the portal layer to be
                                 used in nav map generation.  See below.
+    --doorLayer=DOORLAYER       Define the name for the door layer to be
+                                used in nav map generation.
     --addNavLayers              Add navigation tiles and layers to the Tiled output.
                                 This will also add tiles to the tileset.
-    --outNavPrefix=OUTNAVPRE    If the floorLayer, wallLayer, and doorLayer options are
+    --outNavPrefix=OUTNAVPRE    If the floorLayer, wallLayer, and portalLayer options are
                                 specified, navigation data will be generated.  This
                                 option specifies the prefix for the navigation output
                                 csv files.
@@ -302,118 +305,6 @@ class MapTiler(object):
                 result.append(idx)
         return result
 
-    def CreateRegionEW(self,startIndex, walkable, doors):
-        if startIndex not in walkable:
-            return None
-        xStart,yStart = self.CalculateImageRowCell(startIndex)
-        x0 = xStart
-        x1 = xStart
-        y0 = yStart
-        y1 = yStart
-        # Search west
-        for x in xrange(xStart,-1,-1):
-            idx = self.CalculateImageIndexFromCell(x,yStart)
-            if idx in walkable:
-                x0 = x
-            else:
-                break
-        # Search east
-        for x in xrange(xStart, self.layerWidth+1):
-            idx = self.CalculateImageIndexFromCell(x, yStart)
-            if idx in walkable:
-                x1 = x
-            else:
-                break
-        # Search North whole lines at a time.
-        for y in xrange(yStart,self.layerHeight+1):
-            done = False
-            for x in xrange(x0,x1+1):
-                idx = self.CalculateImageIndexFromCell(x,y)
-                if idx not in walkable:
-                    done = True
-                    break
-            if not done:
-                y1 = y
-            else:
-                break
-        # Search South whole lines at a time
-        for y in xrange(yStart,-1, -1):
-            done = False
-            for x in xrange(x0, x1+1):
-                idx = self.CalculateImageIndexFromCell(x, y)
-                if idx not in walkable:
-                    done = True
-                    break
-            if not done:
-                y0 = y
-            else:
-                break
-        return (x0,y0,x1,y1)
-
-    def CreateRegionNS(self, startIndex, walkable, doors):
-        if startIndex not in walkable:
-            return None
-        xStart, yStart = self.CalculateImageRowCell(startIndex)
-        x0 = xStart
-        x1 = xStart
-        y0 = yStart
-        y1 = yStart
-        # Search North
-        for y in xrange(yStart, -1, -1):
-            idx = self.CalculateImageIndexFromCell(xStart, y)
-            if idx in walkable:
-                y0 = y
-            else:
-                break
-        # Search South
-        for y in xrange(yStart, self.layerHeight + 1):
-            idx = self.CalculateImageIndexFromCell(xStart, y)
-            if idx in walkable:
-                y1 = y
-            else:
-                break
-        # Search East whole lines at a time.
-        for x in xrange(xStart, self.layerWidth+1):
-            done = False
-            for y in xrange(y0, y1 + 1):
-                idx = self.CalculateImageIndexFromCell(x, y)
-                if idx not in walkable:
-                    done = True
-                    break
-            if not done:
-                x1 = x
-            else:
-                break
-        # Search South whole lines at a time
-        for x in xrange(xStart, -1, -1):
-            done = False
-            for y in xrange(y0, y1 + 1):
-                idx = self.CalculateImageIndexFromCell(x, y)
-                if idx not in walkable:
-                    done = True
-                    break
-            if not done:
-                x0 = x
-            else:
-                break
-        return (x0, y0, x1, y1)
-
-    # Iterate through ALL the cells in the region and determine if
-    # we get the same region.  If we do, then it is a valid region.
-    # Otherwise, it is not.
-    def ValidateRegion(self,region,startIdx,walkable, doors):
-        vRegion = self.CreateRegionNS(startIdx, walkable, doors)
-        if region != vRegion:
-            return False
-        x0, y0, x1, y1 = region
-        # If the height/width ratio of the region is too large
-        # or too small, the region is probably bad.
-        regionWidth = 1.0 * (y1 + 1 - y0)
-        regionHeight = 1. * (x1 + 1 - x0)
-        regionRatio = regionWidth / regionHeight
-        if regionRatio < 0.5 or regionRatio > 2:
-            return False
-        return True
 
     def CreateRandomColorTile(self,channelMin=64,channelMax=200,opacity=64,text=None):
         r = random.randint(channelMin,channelMax)
@@ -426,58 +317,66 @@ class MapTiler(object):
             draw.text((4,4),text,(0,0,0),font=font)
         return tile
 
-    def CreateRegionsLayer(self):
+    def CreateRoomsLayer(self):
         floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
         wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        portalTiles = self.GetOccupiedTiles(self.navPortalLayer)
         doorTiles = self.GetOccupiedTiles(self.navDoorLayer)
+        for idx in doorTiles:
+            if idx not in portalTiles:
+                portalTiles.append(idx)
         walkable = [idx for idx in floorTiles if idx not in wallTiles]
-        doors = [idx for idx in doorTiles if idx not in wallTiles]
-        regions = []
-        regionRejects = 0
+        portals = [idx for idx in portalTiles if idx not in wallTiles]
+        rooms = []
+        # Use a flood fill algorithm to figure out where the rooms are.
         while len(walkable) > 0:
-            print len(walkable)
-            startIdx = walkable[0]
-            region = self.CreateRegionEW(startIdx,walkable,doors)
-            if regionRejects < len(walkable):
-                if self.ValidateRegion(region,startIdx,walkable,doors):
-                    # Rotate it through
-                    walkable.remove(startIdx)
-                    walkable.append(startIdx)
-                    regionRejects += 1
-                    continue
-            regionRejects = 0
-            x0, y0, x1, y1 = region
-            # Remove all the region tiles from the walkables
-            for x in xrange(x0,x1+1):
-                for y in xrange(y0,y1+1):
-                    idx = self.CalculateImageIndexFromCell(x,y)
-                    #print "Removing idx %d (%d,%d)from consideration." % (idx, x, y)
-                    if idx in walkable:
-                        walkable.remove(idx)
-                    else:
-                        "Idx %d not in walkable!!!"%idx
-            regions.append(region)
-        # For all the regions found, create a color tile and color in those
-        # tiles in the map.
-        # Create the layer as "empty"
+            # Start a list for the tiles in this room.
+            roomTiles = []
+            # Push the first element in the walkables onto the list.
+            queue = [walkable[0]]
+            while len(queue) > 0:
+                # Pull it off the stack
+                idx = queue.pop(0)
+                # It is in the room.
+                roomTiles.append(idx)
+                x,y = self.CalculateImageRowCell(idx)
+                adjacent = [self.CalculateImageIndexFromCell(x,y+1),
+                       self.CalculateImageIndexFromCell(x,y-1),
+                       self.CalculateImageIndexFromCell(x+1,y),
+                       self.CalculateImageIndexFromCell(x-1,y)]
+                for adj in adjacent:
+                    if adj in roomTiles:
+                        continue
+                    if adj not in walkable:
+                        # Already considered or not walkable
+                        continue
+                    if adj in queue:
+                        # Already in consideration
+                        continue
+                    if idx in portals and adj in portals:
+                        # Don't expand beyond doors.
+                        continue
+                    queue.append(adj)
+                # Remove it from walkable...we've looked at it now.
+                walkable.remove(idx)
+            rooms.append(roomTiles)
+        # Cache off the rooms
+        self.roomDict = {}
+        for idx in xrange(len(rooms)):
+            self.roomTilesDict[idx] = rooms[idx]
+        # Create the layer
         layerDict = { idx:(0,0) for idx in xrange(self.layerTiles) }
-        for idx in xrange(len(regions)):
-            region = regions[idx]
-            x0,y0,x1,y1 = region
-            print "Region[%d] %s"%(idx,region)
-            regionTile = self.CreateRandomColorTile(opacity=128,text="R%d"%idx)
-            regionTileIdx = len(self.imageDict)
-            self.imageDict[regionTileIdx] = regionTile
-            # Color in all the indexes
-            for x in xrange(x0, x1+1):
-                for y in xrange(y0, y1+1):
-                    idx = self.CalculateImageIndexFromCell(x,y)
-                    layerDict[idx] = (regionTileIdx,0)
-        # Add the layer in.
-        lname = self.outNavPrefix + "Regions"
+        for idx in xrange(len(rooms)):
+            tile = self.CreateRandomColorTile(opacity=128,text="R%d"%idx)
+            tileIdx = len(self.imageDict)
+            self.imageDict[tileIdx] = tile
+            for roomTile in rooms[idx]:
+                layerDict[roomTile] = (tileIdx,0)
+        lname = self.outNavPrefix + "Rooms"
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
         return True
+
 
     def CreateWalkableLayer(self):
         floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
@@ -507,12 +406,10 @@ class MapTiler(object):
         self.imageDict[blockedTileIdx] = blockedTile
         # Add a layer to represent the blocked layer
         lname = self.outNavPrefix + "Blocked"
-        layerDict = {}
+        layerDict = { idx: (0,0) for idx in xrange(self.layerTiles)}
         for idx in xrange(self.layerTiles):
             if idx in wallTiles:
                 layerDict[idx] = (blockedTileIdx,0)
-            else:
-                layerDict[idx] = (0,0)
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
         return True
@@ -524,7 +421,7 @@ class MapTiler(object):
             return False
         if not self.CreateWalkableLayer():
             return False
-        if not self.CreateRegionsLayer():
+        if not self.CreateRoomsLayer():
             return False
         return True
 
@@ -862,9 +759,10 @@ class MapTiler(object):
 
     def CheckNavArguments(self):
         self.createNavData = False
-        if self.navDoorLayer or self.navFloorLayer or self.navWallLayer:
-            if self.navDoorLayer == None or self.navWallLayer == None or self.navFloorLayer == None:
-                print "Must specifiy floorLayer, wallLayer, and doorLayer if any are specified."
+        if self.navPortalLayer or self.navFloorLayer or self.navWallLayer or self.navDoorLayer:
+            if self.navPortalLayer == None or self.navWallLayer == None or \
+                            self.navFloorLayer == None or self.navDoorLayer == None:
+                print "Must specifiy floorLayer, wallLayer, doorLayer, and portalLayer if any are specified."
                 return False
             if self.navFloorLayer not in self.layerNames:
                 print "Nav Floor Layer %s not in layers."%self.navFloorLayer
@@ -872,8 +770,8 @@ class MapTiler(object):
             if self.navWallLayer not in self.layerNames:
                 print "Nav Wall Layer %s not in layers." % self.navWallLayer
                 return False
-            if self.navDoorLayer not in self.layerNames:
-                print "Nav Door Layer %s not in layers." % self.navDoorLayer
+            if self.navPortalLayer not in self.layerNames:
+                print "Nav Portal Layer %s not in layers." % self.navPortalLayer
                 return False
             self.createNavData = True
         return True
@@ -895,6 +793,7 @@ class MapTiler(object):
                       overwriteExisting,
                       floorLayer,
                       wallLayer,
+                      portalLayer,
                       doorLayer,
                       outNavPrefix,
                       addNavLayers):
@@ -914,8 +813,9 @@ class MapTiler(object):
         self.addNavLayers = addNavLayers
         self.outNavPrefix = outNavPrefix
         self.navWallLayer = wallLayer
-        self.navDoorLayer = doorLayer
+        self.navPortalLayer = portalLayer
         self.navFloorLayer = floorLayer
+        self.navDoorLayer = doorLayer
 
         # Main execution path
         if not self.CheckExistingFiles():
@@ -961,13 +861,14 @@ if __name__ == "__main__":
     # When testing is done, this is where
     # test arguments are inserted.
 
-    arguments["<layerImage>"] = ["Floors.png", "Walls.png", "Objects.png", "Doors.png", "DoorActivators.png"]
+    arguments["<layerImage>"] = ["Floors.png", "Walls.png", "Objects.png", "Doors.png", "DoorActivators.png", "Portals.png"]
     arguments["--tileWidth"] = "32"
     arguments["--tileHeight"] = "32"
 #    arguments["--verbose"] = True
     arguments["--overwriteExisting"] = True
     arguments["--floorLayer"] = "Floors"
     arguments["--wallLayer"] = "Walls"
+    arguments["--portalLayer"] = "Portals"
     arguments["--doorLayer"] = "Doors"
 
 
@@ -993,8 +894,9 @@ if __name__ == "__main__":
     mergeExisting = arguments['--mergeExisting']
     overwriteExisting = arguments['--overwriteExisting']
     wallLayer = arguments['--wallLayer']
-    doorLayer = arguments['--doorLayer']
+    portalLayer = arguments['--portalLayer']
     floorLayer = arguments['--floorLayer']
+    doorLayer = arguments['--doorLayer']
     addNavLayers = arguments['--addNavLayers']
     outNavPrefix = arguments['--outNavPrefix']
 
@@ -1016,6 +918,7 @@ if __name__ == "__main__":
                          overwriteExisting,
                          floorLayer,
                          wallLayer,
+                         portalLayer,
                          doorLayer,
                          outNavPrefix,
                          addNavLayers)
