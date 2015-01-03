@@ -33,12 +33,17 @@ Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--tileInsetX=INSETX]
                     [--tileInsetY=INSETY]
                     [--filePattern=PATTERN]
-                    [--outTileset=OUTTILESET]
-                    [--outTiled=OUTTILED]
+                    [--floorLayer=FLOORLAYER]
+                    [--wallLayer=WALLLAYER]
+                    [--doorLayer=DOORLAYER]
+                    [--addNavLayers]
                     [--forceSquareTileset]
-                    [--verbose]
                     [--overwriteExisting]
                     [--mergeExisting]
+                    [--outTileset=OUTTILESET]
+                    [--outTiled=OUTTILED]
+                    [--outNavPrefix=OUTNAVPRE]
+                    [--verbose]
                     [<layerImage>...]
 
 Argumnts:
@@ -74,6 +79,19 @@ Options:
     --forceSquareTileset        If present, the tileset image will be
                                 a square image.  The output tileset image
                                 is always a power of 2 in size.
+    --floorLayer=FLOORLAYER     Define the name for the floor layer to be
+                                used in nav map generation.  See below.
+    --wallLayer=WALLLAYER       Define the name for the wall layer to be
+                                used in nav map generation.  See below.
+    --doorLayer=DOORLAYER       Define the name for the door layer to be
+                                used in nav map generation.  See below.
+    --addNavLayers              Add navigation tiles and layers to the Tiled output.
+                                This will also add tiles to the tileset.
+    --outNavPrefix=OUTNAVPRE    If the floorLayer, wallLayer, and doorLayer options are
+                                specified, navigation data will be generated.  This
+                                option specifies the prefix for the navigation output
+                                csv files.
+                                [Default: NAV_]
     --verbose                   If present, give output while working.
     --overwriteExisting         Overwrite output files with new files.
 
@@ -82,6 +100,8 @@ Options:
                                 with the existing file.  See below.
 
 
+Merging and Overwriting
+------------------------------------------------------------------------------
 The script will check if the output files exist first.  The default
 behavior IS TO FAIL if they do.  This is to prevent you from accidentally
 overwriting your data files.
@@ -106,6 +126,10 @@ bad results.
 
 The --overwriteExisting and --mergeExisting are mutually exclusive.
 
+Generating Navigation Data
+------------------------------------------------------------------------------
+TBD
+
 Website:        http://www.NonlinearIdeas.com
 Repository:     https://github.com/NonlinearIdeas/Map-Tiler
 Report Issues:  https://github.com/NonlinearIdeas/Map-Tiler
@@ -119,10 +143,13 @@ import glob
 import os
 import Image
 import ImageChops
+import ImageDraw
+import ImageFont
 from lxml import etree
 import docopt
 import math
 import datetime
+import random
 
 
 class MapTiler(object):
@@ -164,6 +191,9 @@ class MapTiler(object):
         7: ( True, True, True),
     }
 
+    FLIPPED_HORIZONTALLY_FLAG = 0x80000000
+    FLIPPED_VERTICALLY_FLAG = 0x40000000
+    FLIPPED_DIAGONALLY_FLAG = 0x20000000
 
     def __init__(self):
         pass
@@ -173,17 +203,20 @@ class MapTiler(object):
     # and flipX flag passed in from the PyxelEdit element.
     def UpdateGIDForRotation(self, gid, xForm):
         # Constants used in Tiled to indicate flip/rotation
-        FLIPPED_HORIZONTALLY_FLAG = 0x80000000
-        FLIPPED_VERTICALLY_FLAG = 0x40000000
-        FLIPPED_DIAGONALLY_FLAG = 0x20000000
         flipX, flipY, flipD = MapTiler.TRANSFORM_DICT[xForm]
         if flipX:
-            gid += FLIPPED_HORIZONTALLY_FLAG
+            gid += MapTiler.FLIPPED_HORIZONTALLY_FLAG
         if flipY:
-            gid += FLIPPED_VERTICALLY_FLAG
+            gid += MapTiler.FLIPPED_VERTICALLY_FLAG
         if flipD:
-            gid += FLIPPED_DIAGONALLY_FLAG
+            gid += MapTiler.FLIPPED_DIAGONALLY_FLAG
         return gid
+
+    def ExtractTileIndex(self,gid):
+        return gid & \
+               MapTiler.FLIPPED_DIAGONALLY_FLAG & \
+               MapTiler.FLIPPED_HORIZONTALLY_FLAG & \
+               MapTiler.FLIPPED_DIAGONALLY_FLAG
 
 
     def CreateLayerFiles(self, inputFilePattern = None, fileList = []):
@@ -238,13 +271,13 @@ class MapTiler(object):
         return True
 
     def CalculateImageIndexFromCell(self, col, row):
-        index = row * self.tileWidth + col
+        index = row * self.layerWidth + col
         return index
 
     def CalculateImageRowCell(self, index):
         row = index / self.layerWidth
         col = index % self.layerWidth
-        return row, col
+        return col, row
 
     def CalculateSubimageRect(self, index):
         row = index / self.layerWidth
@@ -259,6 +292,241 @@ class MapTiler(object):
         rect = self.CalculateSubimageRect(index)
         ex = im.crop(rect)
         return ex
+
+    def GetOccupiedTiles(self,layerName):
+        result = []
+        layerDict = self.layerDict[layerName]
+        for idx in layerDict:
+            tileIdx, xForm = layerDict[idx]
+            if tileIdx > 0:
+                result.append(idx)
+        return result
+
+    def CreateRegionEW(self,startIndex, walkable, doors):
+        if startIndex not in walkable:
+            return None
+        xStart,yStart = self.CalculateImageRowCell(startIndex)
+        x0 = xStart
+        x1 = xStart
+        y0 = yStart
+        y1 = yStart
+        # Search west
+        for x in xrange(xStart,-1,-1):
+            idx = self.CalculateImageIndexFromCell(x,yStart)
+            if idx in walkable:
+                x0 = x
+            else:
+                break
+        # Search east
+        for x in xrange(xStart, self.layerWidth+1):
+            idx = self.CalculateImageIndexFromCell(x, yStart)
+            if idx in walkable:
+                x1 = x
+            else:
+                break
+        # Search North whole lines at a time.
+        for y in xrange(yStart,self.layerHeight+1):
+            done = False
+            for x in xrange(x0,x1+1):
+                idx = self.CalculateImageIndexFromCell(x,y)
+                if idx not in walkable:
+                    done = True
+                    break
+            if not done:
+                y1 = y
+            else:
+                break
+        # Search South whole lines at a time
+        for y in xrange(yStart,-1, -1):
+            done = False
+            for x in xrange(x0, x1+1):
+                idx = self.CalculateImageIndexFromCell(x, y)
+                if idx not in walkable:
+                    done = True
+                    break
+            if not done:
+                y0 = y
+            else:
+                break
+        return (x0,y0,x1,y1)
+
+    def CreateRegionNS(self, startIndex, walkable, doors):
+        if startIndex not in walkable:
+            return None
+        xStart, yStart = self.CalculateImageRowCell(startIndex)
+        x0 = xStart
+        x1 = xStart
+        y0 = yStart
+        y1 = yStart
+        # Search North
+        for y in xrange(yStart, -1, -1):
+            idx = self.CalculateImageIndexFromCell(xStart, y)
+            if idx in walkable:
+                y0 = y
+            else:
+                break
+        # Search South
+        for y in xrange(yStart, self.layerHeight + 1):
+            idx = self.CalculateImageIndexFromCell(xStart, y)
+            if idx in walkable:
+                y1 = y
+            else:
+                break
+        # Search East whole lines at a time.
+        for x in xrange(xStart, self.layerWidth+1):
+            done = False
+            for y in xrange(y0, y1 + 1):
+                idx = self.CalculateImageIndexFromCell(x, y)
+                if idx not in walkable:
+                    done = True
+                    break
+            if not done:
+                x1 = x
+            else:
+                break
+        # Search South whole lines at a time
+        for x in xrange(xStart, -1, -1):
+            done = False
+            for y in xrange(y0, y1 + 1):
+                idx = self.CalculateImageIndexFromCell(x, y)
+                if idx not in walkable:
+                    done = True
+                    break
+            if not done:
+                x0 = x
+            else:
+                break
+        return (x0, y0, x1, y1)
+
+    # Iterate through ALL the cells in the region and determine if
+    # we get the same region.  If we do, then it is a valid region.
+    # Otherwise, it is not.
+    def ValidateRegion(self,region,startIdx,walkable, doors):
+        vRegion = self.CreateRegionNS(startIdx, walkable, doors)
+        if region != vRegion:
+            return False
+        x0, y0, x1, y1 = region
+        # If the height/width ratio of the region is too large
+        # or too small, the region is probably bad.
+        regionWidth = 1.0 * (y1 + 1 - y0)
+        regionHeight = 1. * (x1 + 1 - x0)
+        regionRatio = regionWidth / regionHeight
+        if regionRatio < 0.5 or regionRatio > 2:
+            return False
+        return True
+
+    def CreateRandomColorTile(self,channelMin=64,channelMax=200,opacity=64,text=None):
+        r = random.randint(channelMin,channelMax)
+        g = random.randint(channelMin,channelMax)
+        b = random.randint(channelMin,channelMax)
+        tile = Image.new("RGBA", (self.tileWidth, self.tileHeight), (r,g,b,opacity))
+        if text:
+            draw = ImageDraw.Draw(tile)
+            font = ImageFont.load_default()
+            draw.text((4,4),text,(0,0,0),font=font)
+        return tile
+
+    def CreateRegionsLayer(self):
+        floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
+        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        doorTiles = self.GetOccupiedTiles(self.navDoorLayer)
+        walkable = [idx for idx in floorTiles if idx not in wallTiles]
+        doors = [idx for idx in doorTiles if idx not in wallTiles]
+        regions = []
+        regionRejects = 0
+        while len(walkable) > 0:
+            print len(walkable)
+            startIdx = walkable[0]
+            region = self.CreateRegionEW(startIdx,walkable,doors)
+            if regionRejects < len(walkable):
+                if self.ValidateRegion(region,startIdx,walkable,doors):
+                    # Rotate it through
+                    walkable.remove(startIdx)
+                    walkable.append(startIdx)
+                    regionRejects += 1
+                    continue
+            regionRejects = 0
+            x0, y0, x1, y1 = region
+            # Remove all the region tiles from the walkables
+            for x in xrange(x0,x1+1):
+                for y in xrange(y0,y1+1):
+                    idx = self.CalculateImageIndexFromCell(x,y)
+                    #print "Removing idx %d (%d,%d)from consideration." % (idx, x, y)
+                    if idx in walkable:
+                        walkable.remove(idx)
+                    else:
+                        "Idx %d not in walkable!!!"%idx
+            regions.append(region)
+        # For all the regions found, create a color tile and color in those
+        # tiles in the map.
+        # Create the layer as "empty"
+        layerDict = { idx:(0,0) for idx in xrange(self.layerTiles) }
+        for idx in xrange(len(regions)):
+            region = regions[idx]
+            x0,y0,x1,y1 = region
+            print "Region[%d] %s"%(idx,region)
+            regionTile = self.CreateRandomColorTile(opacity=128,text="R%d"%idx)
+            regionTileIdx = len(self.imageDict)
+            self.imageDict[regionTileIdx] = regionTile
+            # Color in all the indexes
+            for x in xrange(x0, x1+1):
+                for y in xrange(y0, y1+1):
+                    idx = self.CalculateImageIndexFromCell(x,y)
+                    layerDict[idx] = (regionTileIdx,0)
+        # Add the layer in.
+        lname = self.outNavPrefix + "Regions"
+        self.layerDict[lname] = layerDict
+        self.layerNames.append(lname)
+        return True
+
+    def CreateWalkableLayer(self):
+        floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
+        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        walkable = [idx for idx in floorTiles if idx not in wallTiles]
+        # Add a tile to represent a blocked cell
+        walkTile = Image.new("RGBA", (self.tileWidth, self.tileHeight), (0, 0, 128, 64))
+        walkTileIdx = len(self.imageDict)
+        self.imageDict[walkTileIdx] = walkTile
+        # Add a layer to represent the blocked layer
+        lname = self.outNavPrefix + "Walkable"
+        layerDict = {}
+        for idx in xrange(self.layerTiles):
+            if idx in walkable:
+                layerDict[idx] = (walkTileIdx, 0)
+            else:
+                layerDict[idx] = (0, 0)
+        self.layerDict[lname] = layerDict
+        self.layerNames.append(lname)
+        return True
+
+    def CreateBlockingLayer(self):
+        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        # Add a tile to represent a blocked cell
+        blockedTile = Image.new("RGBA",(self.tileWidth,self.tileHeight), (128,0,0,64))
+        blockedTileIdx = len(self.imageDict)
+        self.imageDict[blockedTileIdx] = blockedTile
+        # Add a layer to represent the blocked layer
+        lname = self.outNavPrefix + "Blocked"
+        layerDict = {}
+        for idx in xrange(self.layerTiles):
+            if idx in wallTiles:
+                layerDict[idx] = (blockedTileIdx,0)
+            else:
+                layerDict[idx] = (0,0)
+        self.layerDict[lname] = layerDict
+        self.layerNames.append(lname)
+        return True
+
+    def CreateNavData(self):
+        if not self.createNavData:
+            return True
+        if not self.CreateBlockingLayer():
+            return False
+        if not self.CreateWalkableLayer():
+            return False
+        if not self.CreateRegionsLayer():
+            return False
+        return True
 
     def CreateTileset(self):
         self.imageDict = {}
@@ -285,7 +553,7 @@ class MapTiler(object):
             for idx in xrange(self.layerTiles):
                 subimg = self.ExtractSubimage(img, idx)
                 foundXform = False
-                row, col = self.CalculateImageRowCell(idx)
+                col, row = self.CalculateImageRowCell(idx)
                 self.tilesPossible += 1
                 tilesProcessed += 1
                 # A slight optimization here.  Tiles are being scanned
@@ -348,21 +616,9 @@ class MapTiler(object):
             lname = os.path.splitext(lname)[0]
             print "Layer:", lname
             for idx in xrange(self.layerTiles):
-                row, col = self.CalculateImageRowCell(idx)
+                col, row = self.CalculateImageRowCell(idx)
                 print " -[%d] (%d, %d) %s" % (idx, col, row, self.layerDict[lname][idx])
             print
-
-    # For each image, a single number will be computed that will be used as an "image metric".
-    # The number will be based on the histogram, which makes it rotation/flipping invariant.
-    # The number will be an integer so that numerical issues with the LSBs will not affect
-    # the outcome (in general).
-    # This number is NOT meant to be a method to compare if two images are the same.  It is
-    # meant to be used to determine that two images are NOT the same (culling) so that a
-    # second computationally more expensive test may be performed.
-    def CalculateImageMetric(self, image):
-        histogram = image.histogram()
-        hSum = sum(histogram)
-        return int(hSum)
 
     # Determine if two images are the same by comparing rotations and
     # reflections between them.  If a transformation can be found that
@@ -590,7 +846,6 @@ class MapTiler(object):
             return False
         return True
 
-
     def CheckExistingFiles(self):
         if self.mergeExisting and self.overwriteExisting:
             print "Cannot have options to merge and overwrite existing files."
@@ -605,21 +860,44 @@ class MapTiler(object):
                 return False
         return True
 
+    def CheckNavArguments(self):
+        self.createNavData = False
+        if self.navDoorLayer or self.navFloorLayer or self.navWallLayer:
+            if self.navDoorLayer == None or self.navWallLayer == None or self.navFloorLayer == None:
+                print "Must specifiy floorLayer, wallLayer, and doorLayer if any are specified."
+                return False
+            if self.navFloorLayer not in self.layerNames:
+                print "Nav Floor Layer %s not in layers."%self.navFloorLayer
+                return False
+            if self.navWallLayer not in self.layerNames:
+                print "Nav Wall Layer %s not in layers." % self.navWallLayer
+                return False
+            if self.navDoorLayer not in self.layerNames:
+                print "Nav Door Layer %s not in layers." % self.navDoorLayer
+                return False
+            self.createNavData = True
+        return True
+
     def ProcessInputs(self,
-                      tileWidth=64,
-                      tileHeight=64,
-                      tileOffX = 0,
-                      tileOffY = 0,
-                      tileInsetX = 0,
-                      tileInsetY = 0,
-                      fileList = [],
-                      inputFilePattern="*.png",
-                      outTilesetFile="tileset.png",
-                      outTiledFile="tiled.tmx",
-                      forceSquareTileset=True,
-                      verbose = False,
-                      mergeExisting = False,
-                      overwriteExisting = False):
+                      tileWidth,
+                      tileHeight,
+                      tileOffX,
+                      tileOffY,
+                      tileInsetX,
+                      tileInsetY,
+                      fileList,
+                      inputFilePattern,
+                      outTilesetFile,
+                      outTiledFile,
+                      forceSquareTileset,
+                      verbose ,
+                      mergeExisting,
+                      overwriteExisting,
+                      floorLayer,
+                      wallLayer,
+                      doorLayer,
+                      outNavPrefix,
+                      addNavLayers):
         self.tileOffX = tileOffX
         self.tileOffY = tileOffY
         self.tileInsetX = tileInsetX
@@ -633,12 +911,20 @@ class MapTiler(object):
         self.mergeExisting = mergeExisting
         self.overwriteExisting = overwriteExisting
         self.startTime = datetime.datetime.now()
+        self.addNavLayers = addNavLayers
+        self.outNavPrefix = outNavPrefix
+        self.navWallLayer = wallLayer
+        self.navDoorLayer = doorLayer
+        self.navFloorLayer = floorLayer
 
         # Main execution path
         if not self.CheckExistingFiles():
             print "Unable to continue."
             return False
         if not self.CreateLayerFiles(inputFilePattern,fileList):
+            print "Unable to continue."
+            return False
+        if not self.CheckNavArguments():
             print "Unable to continue."
             return False
         if not self.CheckImageSizes():
@@ -648,6 +934,9 @@ class MapTiler(object):
             print "Unable to continue."
             return False
         if not self.CreateTileset():
+            print "Unable to continue."
+            return False
+        if not self.CreateNavData():
             print "Unable to continue."
             return False
         # self.DumpTilemap()
@@ -671,29 +960,17 @@ if __name__ == "__main__":
     arguments = docopt.docopt(__doc__)
     # When testing is done, this is where
     # test arguments are inserted.
-    """
-    arguments["<layerImage>"] = ["Floor.png", "Walls.png", "Objects.png", "Doors.png" ]
+
+    arguments["<layerImage>"] = ["Floors.png", "Walls.png", "Objects.png", "Doors.png", "DoorActivators.png"]
     arguments["--tileWidth"] = "32"
     arguments["--tileHeight"] = "32"
-    arguments["--verbose"] = True
-    arguments["--mergeExisting"] = True
-    """
+#    arguments["--verbose"] = True
+    arguments["--overwriteExisting"] = True
+    arguments["--floorLayer"] = "Floors"
+    arguments["--wallLayer"] = "Walls"
+    arguments["--doorLayer"] = "Doors"
 
-    """
-    arguments["<layerImage>"] = ["JansHouse.png"]
-    arguments["--tileWidth"] = "8"
-    arguments["--tileHeight"] = "8"
-    arguments["--tileInsetY"] = "0"
-    arguments["--verbose"] = True
-    """
 
-    """
-    arguments["<layerImage>"] = ["kmare.png"]
-    arguments["--tileWidth"] = "16"
-    arguments["--tileHeight"] = "16"
-    arguments["--tileInsetY"] = "5"
-    arguments["--verbose"] = True
-    """
     print "-----------------------------------"
     print "Inputs:"
     args = arguments.keys()
@@ -715,14 +992,30 @@ if __name__ == "__main__":
     verbose = arguments['--verbose']
     mergeExisting = arguments['--mergeExisting']
     overwriteExisting = arguments['--overwriteExisting']
+    wallLayer = arguments['--wallLayer']
+    doorLayer = arguments['--doorLayer']
+    floorLayer = arguments['--floorLayer']
+    addNavLayers = arguments['--addNavLayers']
+    outNavPrefix = arguments['--outNavPrefix']
+
     # Now execute the parser
     parser = MapTiler()
-    parser.ProcessInputs(tileWidth,tileHeight,
-                         tileOffX,tileOffY,
-                         tileInsetX,tileInsetY,
-                         fileList,filePattern,
-                         outTileset,outTiled,
+    parser.ProcessInputs(tileWidth,
+                         tileHeight,
+                         tileOffX,
+                         tileOffY,
+                         tileInsetX,
+                         tileInsetY,
+                         fileList,
+                         filePattern,
+                         outTileset,
+                         outTiled,
                          forceSquareTileset,
                          verbose,
                          mergeExisting,
-                         overwriteExisting)
+                         overwriteExisting,
+                         floorLayer,
+                         wallLayer,
+                         doorLayer,
+                         outNavPrefix,
+                         addNavLayers)
