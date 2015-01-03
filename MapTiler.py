@@ -191,7 +191,6 @@ class MapTiler(object):
             files = glob.glob(inputFilePattern)
             if len(files) == 0:
                 print "No files found matching pattern %s." % self.inputFilePattern
-                print "Unable to continue."
                 return False
             else:
                 files.sort()
@@ -199,7 +198,6 @@ class MapTiler(object):
         # If there are no files to process, we are done.
         if len(fileList) == 0:
             print "No files to process."
-            print "Unable to continue."
             return False
         self.layerFiles = []
         self.layerNames = []
@@ -220,7 +218,6 @@ class MapTiler(object):
         if imageWidth % self.tileWidth != 0:
             print "File %s's Width %d cannot be divided evenly by tile width %d." % (
                 self.layerFiles[0], imageWidth, self.tileWidth)
-            print "Unable to continue."
             return False
         if imageHeight % self.tileHeight != 0:
             print "File %s's Height %d cannot be divided evenly by tile height %d." % (
@@ -237,7 +234,6 @@ class MapTiler(object):
             if width != self.imageWidth or height != self.imageHeight:
                 print "Image %s Size (%d x %d) does not match base size (%d x %d)" % (
                     other, width, height, self.imageWidth, self.imageHeight)
-                print "Unable to continue."
                 return False
         return True
 
@@ -550,9 +546,11 @@ class MapTiler(object):
         if not self.mergeExisting:
             # If we are not merging, there is not a problem.
             return True
-        # Load the file and pull out the tile width/height.
+        # Load the existing file.
         inTree = etree.parse(self.outTiledFile)
         inRoot = inTree.getroot()
+
+        # Verify the tile width/height.
         layerWidth = int(inRoot.attrib["width"])
         layerHeight = int(inRoot.attrib["height"])
         if layerWidth != self.layerWidth:
@@ -560,14 +558,35 @@ class MapTiler(object):
                 self.outTiledFile,
                 layerWidth,
                 self.layerWidth)
-            print "Unable to continue."
             return False
         if layerHeight != self.layerHeight:
             print "Layer height in existing %s = %d which does not match new configuration width %d." % (
                 self.outTiledFile,
                 layerHeight,
                 self.layerHeight)
-            print "Unable to continue."
+            return False
+
+        # Currently,this script produces only ONE tileset
+        # and it will take some work to move them all around
+        # and merge them.  So for now at least, the script will
+        # fail if the tiled file contains more than one tileset.
+        tilesets = inRoot.findall("tileset")
+        if len(tilesets) == 0:
+            print "Existing Tiled file has no tileset in it.  Cannot merge."
+            return False
+        if len(tilesets) > 1:
+            print "Existing Tiled file has more than one tileset in it."
+            return False
+        images = tilesets[0].findall("image")
+        if len(images) == 0:
+            print "Existing tileset has no image associated with it."
+            return False
+        if len(images) > 1:
+            print "Existing tileset is connected to more than one image."
+            return False
+        imageSrc = images[0].attrib['source']
+        if imageSrc != self.outTilesetFile:
+            print "Existing tileset uses image %s, not output image %s."%(imageSrc,self.outTilesetFile)
             return False
         return True
 
@@ -575,17 +594,14 @@ class MapTiler(object):
     def CheckExistingFiles(self):
         if self.mergeExisting and self.overwriteExisting:
             print "Cannot have options to merge and overwrite existing files."
-            print "Unable to continue."
             return False
         if os.path.exists(self.outTilesetFile):
             if not self.mergeExisting and not self.overwriteExisting:
                 print "Output %s exists and would be modified.  Use options to control this."%self.outTilesetFile
-                print "Unable to continue."
                 return False
         if os.path.exists(self.outTiledFile):
             if not self.mergeExisting and not self.overwriteExisting:
                 print "Output %s exists and would be modified.  Use options to control this."%self.outTiledFile
-                print "Unable to continue."
                 return False
         return True
 
@@ -620,19 +636,26 @@ class MapTiler(object):
 
         # Main execution path
         if not self.CheckExistingFiles():
+            print "Unable to continue."
             return False
         if not self.CreateLayerFiles(inputFilePattern,fileList):
+            print "Unable to continue."
             return False
         if not self.CheckImageSizes():
+            print "Unable to continue."
             return False
         if not self.CheckMergingFiles():
+            print "Unable to continue."
             return False
         if not self.CreateTileset():
+            print "Unable to continue."
             return False
         # self.DumpTilemap()
         if not self.ExportTileset():
+            print "Unable to continue."
             return False
         if not self.ExportTiledFile():
+            print "Unable to continue."
             return False
 
         # Report execution time.
