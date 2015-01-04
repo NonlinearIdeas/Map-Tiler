@@ -199,8 +199,10 @@ class MapTiler(object):
     FLIPPED_DIAGONALLY_FLAG = 0x20000000
 
     def __init__(self):
-        pass
+        self.Reset()
 
+    def Reset(self):
+        self.tileProperties = {}
 
     # Updates the gid for a tile based on the rotation
     # and flipX flag passed in from the PyxelEdit element.
@@ -317,7 +319,18 @@ class MapTiler(object):
             draw.text((4,4),text,(0,0,0),font=font)
         return tile
 
-    def CreateRoomsLayer(self):
+    def ExportNavFiles(self):
+        pass
+
+    def CreateBlockingData(self):
+        self.blockedList = self.GetOccupiedTiles(self.navWallLayer)
+
+    def CreateWalkableData(self):
+        floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
+        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        self.walkableList = [idx for idx in floorTiles if idx not in wallTiles]
+
+    def CreateRoomData(self):
         floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
         wallTiles = self.GetOccupiedTiles(self.navWallLayer)
         portalTiles = self.GetOccupiedTiles(self.navPortalLayer)
@@ -339,11 +352,11 @@ class MapTiler(object):
                 idx = queue.pop(0)
                 # It is in the room.
                 roomTiles.append(idx)
-                x,y = self.CalculateImageRowCell(idx)
-                adjacent = [self.CalculateImageIndexFromCell(x,y+1),
-                       self.CalculateImageIndexFromCell(x,y-1),
-                       self.CalculateImageIndexFromCell(x+1,y),
-                       self.CalculateImageIndexFromCell(x-1,y)]
+                x, y = self.CalculateImageRowCell(idx)
+                adjacent = [self.CalculateImageIndexFromCell(x, y + 1),
+                            self.CalculateImageIndexFromCell(x, y - 1),
+                            self.CalculateImageIndexFromCell(x + 1, y),
+                            self.CalculateImageIndexFromCell(x - 1, y)]
                 for adj in adjacent:
                     if adj in roomTiles:
                         continue
@@ -363,25 +376,27 @@ class MapTiler(object):
         # Cache off the rooms
         self.roomDict = {}
         for idx in xrange(len(rooms)):
-            self.roomTilesDict[idx] = rooms[idx]
+            self.roomDict[idx] = rooms[idx]
+
+    def CreateRoomsLayer(self):
+        roomDict = self.roomDict
+        keys = roomDict.keys()
+        keys.sort()
         # Create the layer
         layerDict = { idx:(0,0) for idx in xrange(self.layerTiles) }
-        for idx in xrange(len(rooms)):
+        for idx in keys:
             tile = self.CreateRandomColorTile(opacity=128,text="R%d"%idx)
             tileIdx = len(self.imageDict)
             self.imageDict[tileIdx] = tile
-            for roomTile in rooms[idx]:
+            for roomTile in roomDict[idx]:
                 layerDict[roomTile] = (tileIdx,0)
+                self.tileProperties[tileIdx] = [("ROOM","%s"%idx)]
         lname = self.outNavPrefix + "Rooms"
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
-        return True
-
 
     def CreateWalkableLayer(self):
-        floorTiles = self.GetOccupiedTiles(self.navFloorLayer)
-        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
-        walkable = [idx for idx in floorTiles if idx not in wallTiles]
+        walkable = self.walkableList
         # Add a tile to represent a blocked cell
         walkTile = Image.new("RGBA", (self.tileWidth, self.tileHeight), (0, 0, 128, 64))
         walkTileIdx = len(self.imageDict)
@@ -396,10 +411,9 @@ class MapTiler(object):
                 layerDict[idx] = (0, 0)
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
-        return True
 
     def CreateBlockingLayer(self):
-        wallTiles = self.GetOccupiedTiles(self.navWallLayer)
+        blocked = self.blockedList
         # Add a tile to represent a blocked cell
         blockedTile = Image.new("RGBA",(self.tileWidth,self.tileHeight), (128,0,0,64))
         blockedTileIdx = len(self.imageDict)
@@ -408,21 +422,21 @@ class MapTiler(object):
         lname = self.outNavPrefix + "Blocked"
         layerDict = { idx: (0,0) for idx in xrange(self.layerTiles)}
         for idx in xrange(self.layerTiles):
-            if idx in wallTiles:
+            if idx in blocked:
                 layerDict[idx] = (blockedTileIdx,0)
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
-        return True
 
     def CreateNavData(self):
-        if not self.createNavData:
-            return True
-        if not self.CreateBlockingLayer():
-            return False
-        if not self.CreateWalkableLayer():
-            return False
-        if not self.CreateRoomsLayer():
-            return False
+        if self.createNavData:
+            self.CreateWalkableData()
+            self.CreateBlockingData()
+            self.CreateRoomData()
+            self.ExportNavFiles()
+            if self.addNavLayers:
+                self.CreateWalkableLayer()
+                self.CreateBlockingLayer()
+                self.CreateRoomsLayer()
         return True
 
     def CreateTileset(self):
@@ -612,11 +626,23 @@ class MapTiler(object):
         tileset.attrib["name"] = os.path.splitext(os.path.split(self.outTilesetFile)[1])[0]
         tileset.attrib["tilewidth"] = "%s" % self.tileWidth
         tileset.attrib["tileheight"] = "%s" % self.tileHeight
+
         # Add the image information for the tileset
         imgElem = etree.SubElement(tileset, "image")
         imgElem.attrib["source"] = self.outTilesetFile
         imgElem.attrib["width"] = "%s" % self.tilesetWidth
         imgElem.attrib["height"] = "%s" % self.tilesetHeight
+
+        # Add any special properties that we have put into the tiles.
+        for tileID in self.tileProperties:
+            tile = etree.SubElement(tileset,"tile")
+            tile.attrib["id"] = "%s"%tileID
+            properties = etree.SubElement(tile,"properties")
+            for name,value in self.tileProperties[tileID]:
+                property = etree.SubElement(properties,"property")
+                property.attrib["name"] = name
+                property.attrib["value"] = "%s"%value
+
 
         # Now iterate over the layers and pull out each one.
         for lname in self.layerNames:
@@ -797,6 +823,9 @@ class MapTiler(object):
                       doorLayer,
                       outNavPrefix,
                       addNavLayers):
+
+        self.Reset()
+
         self.tileOffX = tileOffX
         self.tileOffY = tileOffY
         self.tileInsetX = tileInsetX
@@ -870,6 +899,7 @@ if __name__ == "__main__":
     arguments["--wallLayer"] = "Walls"
     arguments["--portalLayer"] = "Portals"
     arguments["--doorLayer"] = "Doors"
+    arguments["--addNavLayers"] = True
 
 
     print "-----------------------------------"
