@@ -37,7 +37,6 @@ Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--wallLayer=WALLLAYER]
                     [--portalLayer=PORTALLAYER]
                     [--doorLayer=DOORLAYER]
-                    [--addNavLayers]
                     [--forceSquareTileset]
                     [--overwriteExisting]
                     [--mergeExisting]
@@ -88,8 +87,6 @@ Options:
                                 used in nav map generation.  See below.
     --doorLayer=DOORLAYER       Define the name for the door layer to be
                                 used in nav map generation.
-    --addNavLayers              Add navigation tiles and layers to the Tiled output.
-                                This will also add tiles to the tileset.
     --outNavPrefix=OUTNAVPRE    If the floorLayer, wallLayer, and portalLayer options are
                                 specified, navigation data will be generated.  This
                                 option specifies the prefix for the navigation output
@@ -139,8 +136,6 @@ Report Issues:  https://github.com/NonlinearIdeas/Map-Tiler
 License:        MIT License - See specific text in source code.
 Copyright:      Copyright (c) 2014 Nonlinear Ideas Inc (contact@nlideas.com)
 """
-
-
 
 import glob
 import os
@@ -432,11 +427,10 @@ class MapTiler(object):
             self.CreateWalkableData()
             self.CreateBlockingData()
             self.CreateRoomData()
-            self.ExportNavFiles()
-            if self.addNavLayers:
-                self.CreateWalkableLayer()
-                self.CreateBlockingLayer()
-                self.CreateRoomsLayer()
+
+            self.CreateWalkableLayer()
+            self.CreateBlockingLayer()
+            self.CreateRoomsLayer()
         return True
 
     def CreateTileset(self):
@@ -577,6 +571,7 @@ class MapTiler(object):
         imageHeight = imageDimHeight * self.tileHeight
         self.tilesetWidth = imageWidth
         self.tilesetHeight = imageHeight
+        print "The tile size is (%d x %d) pixels wide x high."%(self.tileWidth,self.tileHeight)
         print "For %d tiles, the image size will be %d x %d tiles (%d x %d pixels)." % (
             tileCount, imageDimWidth, imageDimHeight, imageWidth, imageHeight)
         print "Efficiency = 100%%(1-Tiles Created / Tiles Possible) => 100%%(1-%d/%d) = %4.1f%%."%(
@@ -821,8 +816,7 @@ class MapTiler(object):
                       wallLayer,
                       portalLayer,
                       doorLayer,
-                      outNavPrefix,
-                      addNavLayers):
+                      outNavPrefix):
 
         self.Reset()
 
@@ -839,7 +833,6 @@ class MapTiler(object):
         self.mergeExisting = mergeExisting
         self.overwriteExisting = overwriteExisting
         self.startTime = datetime.datetime.now()
-        self.addNavLayers = addNavLayers
         self.outNavPrefix = outNavPrefix
         self.navWallLayer = wallLayer
         self.navPortalLayer = portalLayer
@@ -890,7 +883,15 @@ if __name__ == "__main__":
     # When testing is done, this is where
     # test arguments are inserted.
     """
-    arguments["<layerImage>"] = ["Floors.png", "Walls.png", "Objects.png", "Doors.png", "DoorActivators.png", "Portals.png"]
+    arguments["<layerImage>"] = ["Floors.png",
+                                 "Walls.png",
+                                 "Objects.png",
+                                 "Doors.png",
+                                 "DoorActivators.png",
+                                 "Portals.png",
+                                 "Healing.png",
+                                 "Ammo.png",
+                                 "Weapons.png"]
     arguments["--tileWidth"] = "32"
     arguments["--tileHeight"] = "32"
 #    arguments["--verbose"] = True
@@ -899,7 +900,6 @@ if __name__ == "__main__":
     arguments["--wallLayer"] = "Walls"
     arguments["--portalLayer"] = "Portals"
     arguments["--doorLayer"] = "Doors"
-    arguments["--addNavLayers"] = True
     """
 
     print "-----------------------------------"
@@ -927,7 +927,6 @@ if __name__ == "__main__":
     portalLayer = arguments['--portalLayer']
     floorLayer = arguments['--floorLayer']
     doorLayer = arguments['--doorLayer']
-    addNavLayers = arguments['--addNavLayers']
     outNavPrefix = arguments['--outNavPrefix']
 
     # Now execute the parser
@@ -950,5 +949,4 @@ if __name__ == "__main__":
                          wallLayer,
                          portalLayer,
                          doorLayer,
-                         outNavPrefix,
-                         addNavLayers)
+                         outNavPrefix)
