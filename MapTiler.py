@@ -889,7 +889,7 @@ if __name__ == "__main__":
     arguments = docopt.docopt(__doc__)
     # When testing is done, this is where
     # test arguments are inserted.
-
+    """
     arguments["<layerImage>"] = ["Floors.png", "Walls.png", "Objects.png", "Doors.png", "DoorActivators.png", "Portals.png"]
     arguments["--tileWidth"] = "32"
     arguments["--tileHeight"] = "32"
@@ -900,7 +900,7 @@ if __name__ == "__main__":
     arguments["--portalLayer"] = "Portals"
     arguments["--doorLayer"] = "Doors"
     arguments["--addNavLayers"] = True
-
+    """
 
     print "-----------------------------------"
     print "Inputs:"
