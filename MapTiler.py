@@ -89,8 +89,8 @@ Options:
                                 used in nav map generation.
     --outNavPrefix=OUTNAVPRE    If the floorLayer, wallLayer, and portalLayer options are
                                 specified, navigation data will be generated.  This
-                                option specifies the prefix for the navigation output
-                                csv files.
+                                option specifies the prefix for the navigation data,
+                                including layers and properties.
                                 [Default: NAV_]
     --verbose                   If present, give output while working.
     --overwriteExisting         Overwrite output files with new files.
@@ -113,8 +113,11 @@ fail if the width/height in tiles of the layers has changed.
 
 When failing, the original files will be preserved.
 
-The merge operation ONLY merges new layers into the existing
-file.  It does this by iterating through the existing <data>
+Merge Operations
+----------------------------------------------
+(1) The merge operation will merge in processed layers with existing
+layers already in the file.
+It does this by iterating through the existing <data>
 tag of the layer (if it can find it) and updating each <tile>
 element with the gid of the element from the new set.  Otherwise,
 it does not touch ANY DATA.  If it cannot find the layer in the
@@ -123,6 +126,14 @@ existing file, it is added.
 If you have other tilesets in the
 existing file with a gid = "1", this operation will generate
 bad results.
+
+(2) If you created a room map (floorLayer, wallLayer, doorLayer, portalLayer),
+then the existing tileset will be scanned and all properties for the outNavPrefix +
+"ROOM" will be erased.
+
+The new tiles for rooms will have the property added with
+the room number as the value.
+
 
 The --overwriteExisting and --mergeExisting are mutually exclusive.
 
@@ -192,6 +203,10 @@ class MapTiler(object):
     FLIPPED_HORIZONTALLY_FLAG = 0x80000000
     FLIPPED_VERTICALLY_FLAG = 0x40000000
     FLIPPED_DIAGONALLY_FLAG = 0x20000000
+
+    PROPERTY_ROOM = "ROOM"
+
+    DRAW_FONT = "Transformers Movie.ttf"
 
     def __init__(self):
         self.Reset()
@@ -302,6 +317,14 @@ class MapTiler(object):
                 result.append(idx)
         return result
 
+    def DrawCenteredText(self,image,text,size=16,color=(0,0,0)):
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.truetype(MapTiler.DRAW_FONT,size)
+        szX,szY = image.size
+        drX,drY = font.getsize(text)
+        xPos = (szX - drX)/2
+        yPos = (szY - drY)/2
+        draw.text((xPos,yPos),text,color,font)
 
     def CreateRandomColorTile(self,channelMin=64,channelMax=200,opacity=64,text=None):
         r = random.randint(channelMin,channelMax)
@@ -309,9 +332,7 @@ class MapTiler(object):
         b = random.randint(channelMin,channelMax)
         tile = Image.new("RGBA", (self.tileWidth, self.tileHeight), (r,g,b,opacity))
         if text:
-            draw = ImageDraw.Draw(tile)
-            font = ImageFont.load_default()
-            draw.text((4,4),text,(0,0,0),font=font)
+            self.DrawCenteredText(tile,text,self.tileWidth/3,(0,0,0))
         return tile
 
     def ExportNavFiles(self):
@@ -385,7 +406,7 @@ class MapTiler(object):
             self.imageDict[tileIdx] = tile
             for roomTile in roomDict[idx]:
                 layerDict[roomTile] = (tileIdx,0)
-                self.tileProperties[tileIdx] = [("ROOM","%s"%idx)]
+                self.tileProperties[tileIdx] = [(self.outNavPrefix + MapTiler.PROPERTY_ROOM,"%s"%idx)]
         lname = self.outNavPrefix + "Rooms"
         self.layerDict[lname] = layerDict
         self.layerNames.append(lname)
@@ -664,6 +685,30 @@ class MapTiler(object):
     def MergeTiledFiles(self):
         outTree = etree.parse(self.outTiledFile)
         outRoot = outTree.getroot()
+
+        # Remove all the properties for "ROOM" from the existing tileset
+        # and add the room tags for the new tiles to it, if nav tiles
+        # were generated.
+        if self.createNavData:
+            for tileset in outRoot.findall("tileset"):
+                if tileset.attrib["firstgid"] == "1":
+                    # Remove ROOM property for tiles.
+                    for tile in tileset.findall("tile"):
+                        for properties in tile.findall("properties"):
+                            for property in properties.findall("property"):
+                                if property.attrib["name"] == self.outNavPrefix + MapTiler.PROPERTY_ROOM:
+                                    properties.remove(property)
+                    # Add any special properties that we have put into the tiles.
+                    for tileID in self.tileProperties:
+                        tile = etree.SubElement(tileset, "tile")
+                        tile.attrib["id"] = "%s" % tileID
+                        properties = etree.SubElement(tile, "properties")
+                        for name, value in self.tileProperties[tileID]:
+                            property = etree.SubElement(properties, "property")
+                            property.attrib["name"] = name
+                            property.attrib["value"] = "%s" % value
+
+
         # Find all the layers in the output tree
         layers = outRoot.findall("layer")
         outLayers = { layer.attrib['name']:layer for layer in layers }
@@ -885,7 +930,6 @@ if __name__ == "__main__":
     """
     arguments["<layerImage>"] = ["Floors.png",
                                  "Walls.png",
-                                 "Objects.png",
                                  "Doors.png",
                                  "DoorActivators.png",
                                  "Portals.png",
@@ -894,14 +938,14 @@ if __name__ == "__main__":
                                  "Weapons.png"]
     arguments["--tileWidth"] = "32"
     arguments["--tileHeight"] = "32"
-#    arguments["--verbose"] = True
-    arguments["--overwriteExisting"] = True
+    arguments["--verbose"] = True
+#    arguments["--overwriteExisting"] = True
+    arguments["--mergeExisting"] = True
     arguments["--floorLayer"] = "Floors"
     arguments["--wallLayer"] = "Walls"
     arguments["--portalLayer"] = "Portals"
     arguments["--doorLayer"] = "Doors"
     """
-
     print "-----------------------------------"
     print "Inputs:"
     args = arguments.keys()
