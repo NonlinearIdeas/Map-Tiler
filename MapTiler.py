@@ -26,6 +26,10 @@
 
 
 """
+Convert a series of same-sized images into a tile set and tile map that can be
+opened in Tiled.  This is designed specifically for taking a map constructed
+as multiple layers and creating a Tiled file automatically.
+
 Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--tileHeight=HEIGHT]
                     [--tileOffX=OFFX]
@@ -46,7 +50,7 @@ Usage: MapTiler.py  [--tileWidth=WIDTH]
                     [--verbose]
                     [<layerImage>...]
 
-Argumnts:
+Arguments:
 
 
 Options:
@@ -137,15 +141,12 @@ the room number as the value.
 
 The --overwriteExisting and --mergeExisting are mutually exclusive.
 
-Generating Navigation Data
-------------------------------------------------------------------------------
-TBD
 
 Website:        http://www.NonlinearIdeas.com
 Repository:     https://github.com/NonlinearIdeas/Map-Tiler
 Report Issues:  https://github.com/NonlinearIdeas/Map-Tiler
 License:        MIT License - See specific text in source code.
-Copyright:      Copyright (c) 2014 Nonlinear Ideas Inc (contact@nlideas.com)
+Copyright:      Copyright (c) 2015 Nonlinear Ideas Inc (contact@nlideas.com)
 """
 
 import glob
