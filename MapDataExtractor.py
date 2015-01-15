@@ -68,11 +68,13 @@ Usage: MapDataExtractor.py  <tiledFile>
                             [--wallLayer=WALLS]
                             [--doorLayer=DOORS]
                             [--navPrefix=NAVPREFIX]
-                            [--outPrefix=OUTPREFIX]
+                            [--outFile=OUTFILE]
                             [--verbose]
                             [--exclude=LAYER ...]
                             [--blocking=LAYER ...]
-                            [--bind=LAYER ...]
+                            [--binding=LAYER ...]
+                            [--noDiagonalEdges]
+                            [--reallyVerbose]
 Argumnts:
     tiledFile       The Tiled (.tmx) file that contains the Tiled data.
 
@@ -85,19 +87,23 @@ Options:
                             [Default: Doors]
     --navPrefix=NAVPREFIX   The prefix used for navigation layers generated or manually created.
                             [Default: NAV_]
-    --outPrefix=OUTPREFIX   The prefix used with all data files created.
-                            [Default: NAV_]
+    --outFile=OUTFILE       The CSV output file with all the output data.  See below for format.
+                            [Default: NavData.csv]
     --verbose               Generate output while processing.
+    --reallyVerbose         Generate even more output while processing.
     --exclude=LAYER         Specifies a layer to be excluded from processing.
                             Can be specified multiple times.
     --blocking=LAYER        Specifies an object layer that will be considered as
                             blocking in navigation graph generation.
                             Can be specified multiple times.
-    --bind=LAYER            Specifies an object layer that will be considered as
+    --binding=LAYER         Specifies an object layer that will be considered as
                             some kind of "activator" that needs to be bound to the
                             nearest object (other than something that binds).  This
                             is useful for creating door activators, etc.
                             Can be specified multiple times.
+    --noDiagonalEdges       By default, the adjacent check will consider
+                            diagonal edges as well.  This option restricts
+                            the check to only N, S, E, W checks.
 
 Website:        http://www.NonlinearIdeas.com
 Repository:     https://github.com/NonlinearIdeas/Map-Tiler
@@ -109,7 +115,8 @@ Copyright:      Copyright (c) 2015 Nonlinear Ideas Inc (contact@nlideas.com)
 import os
 from lxml import etree
 import docopt
-import math
+import csv
+import string
 
 class MapDataExtractor(object):
     # Keys used for holding output data
@@ -121,6 +128,7 @@ class MapDataExtractor(object):
     KEY_EDGE_ROOM = "ROOM"
     KEY_EDGE_DOOR = "DOOR"
     KEY_EDGE_WALK = "WALK"
+    CSV_EXPORT_COLUMNS = 10
 
     def __init__(self):
         self.Reset()
@@ -217,11 +225,17 @@ class MapDataExtractor(object):
     # are adjacent to it.
     def GetAdjacentIndexes(self,layerIndex):
         col, row = self.CalculateCellColRow(layerIndex)
-        return [ self.CalculateCellIndex(col + 1, row + 0),
+        adjacent = [ self.CalculateCellIndex(col + 1, row + 0),
                  self.CalculateCellIndex(col - 1, row + 0),
                  self.CalculateCellIndex(col + 0, row + 1),
-                 self.CalculateCellIndex(col + 0, row - 1)
+                 self.CalculateCellIndex(col + 0, row - 1),
                  ]
+        if self.diagonalEdges:
+            adjacent += [self.CalculateCellIndex(col + 1, row + 1),
+                            self.CalculateCellIndex(col + 1, row - 1),
+                            self.CalculateCellIndex(col - 1, row + 1),
+                            self.CalculateCellIndex(col - 1, row - 1)]
+        return adjacent
 
     # Perform a search on the adjacent cells until we run out of cells
     # that are connected.  This is used to find all the cells associated
@@ -290,9 +304,11 @@ class MapDataExtractor(object):
         return result
 
     def ExtractRoomsData(self):
-        self.Banner("Extracted Rooms")
+        if self.verbose:
+            self.Banner("Extracting Rooms")
 
         KEY_ROOMS = MapDataExtractor.KEY_ROOMS
+        KEY_WALKABLE = MapDataExtractor.KEY_WALKABLE
         KEY_PROPERTY_ROOM = self.FormatNavName(MapDataExtractor.KEY_PROPERTY_ROOM)
 
         # Create an output set to hold the data.
@@ -302,6 +318,7 @@ class MapDataExtractor(object):
         # have the property.
         roomDict = {}
         tileDict = {}
+        indexDict = {}
         for tileID in self.tileMap:
             if self.tileMap[tileID].has_key(KEY_PROPERTY_ROOM):
                 roomID = int(self.tileMap[tileID][KEY_PROPERTY_ROOM])
@@ -316,8 +333,11 @@ class MapDataExtractor(object):
             tileID = layer[layerIndex]
             if(tileID in tileDict):
                 # This means the tile in the layer is a room tile marker.
-                roomDict[tileDict[tileID]].append(layerIndex)
+                tileType = tileDict[tileID]
+                roomDict[tileType].append(layerIndex)
+                indexDict[layerIndex] = tileType
         self.outputDict[KEY_ROOMS] = roomDict
+        self.outputDict[KEY_WALKABLE] = indexDict
         if self.verbose:
             roomKeys = roomDict.keys()
             roomKeys.sort()
@@ -328,7 +348,8 @@ class MapDataExtractor(object):
         return True
 
     def ExtractObjectsData(self):
-        self.Banner("Extracting Objects")
+        if self.verbose:
+            self.Banner("Extracting Objects")
         # Figure out which layers to process.
         # Start with all the layer names.
         lNames = self.layerMap.keys()
@@ -364,8 +385,8 @@ class MapDataExtractor(object):
         # the ones used for the activators.
         subjectIndexMap = {}
         for subject in subjects:
-            objType,indices,bound = subjects[subject]
-            if objType in self.bindLayers:
+            objType,indices,binding = subjects[subject]
+            if objType in self.bindingLayers:
                 continue
             for idx in indices:
                 subjectIndexMap[idx] = subject
@@ -375,16 +396,16 @@ class MapDataExtractor(object):
         # nearest object.
         keys = subjects.keys()
         keys.sort()
-        for act in self.bindLayers:
+        for act in self.bindingLayers:
             for subject in keys:
-                objType, indices, bound = subjects[subject]
+                objType, indices, binding = subjects[subject]
                 if objType == act:
                     # Find the nearest index
                     nearest = self.FindNearestIndex(indices[0],objIndices)
                     # Bind the two together
-                    boundTo = subjectIndexMap[nearest]
-                    subjects[subject][2].append(boundTo)
-                    subjects[boundTo][2].append(subject)
+                    bindingTo = subjectIndexMap[nearest]
+                    subjects[subject][2].append(bindingTo)
+                    subjects[bindingTo][2].append(subject)
         # Store off for later processing
         self.outputDict[MapDataExtractor.KEY_OBJECTS] = subjects
 
@@ -392,13 +413,14 @@ class MapDataExtractor(object):
             keys = subjects.keys()
             keys.sort()
             for key in keys:
-                objType, indices, bound = subjects[key]
-                print "-- [SubjectID: %d] [Type: %s] [BoundID: %s] %s"%(key,objType, bound,self.IndicesToCells(indices))
+                objType, indices, binding = subjects[key]
+                print "-- [SubjectID: %d] [Type: %s] [BoundID: %s] %s"%(key,objType, binding,self.IndicesToCells(indices))
             print
         return True
 
     def ExtractAdjacencyData(self):
-        self.Banner("Extracting Adjacency Information")
+        if self.verbose:
+            self.Banner("Extracting Adjacency Information")
         # First, we need to build up a map of all the indexes and the
         # rooms that they are attached to.
         # We do this by inverting the rooms data.
@@ -476,15 +498,94 @@ class MapDataExtractor(object):
                             colSrc, rowSrc, colDes, rowDes, roomDes))
             print
             print "Walking Edges:"
-#            for item in walkEdges:
-#                print item
-            print "Skipped..."
+            if self.reallyVerbose:
+                for item in walkEdges:
+                    print item
+            else:
+               print "<Not Showing>"
             print
             print "Other Types of Edges"
             for item in restEdges:
                 print item
 
         return True
+
+    def ExportTilemapData(self,writer):
+        # Export the Tilemap Data
+        writer.writerow(["Tilemap", "File", self.tiledFile])
+        writer.writerow(["Tilemap", "TileHeight", self.tileHeight])
+        writer.writerow(["Tilemap", "TileWidth", self.tileWidth])
+        writer.writerow(["Tilemap", "LayerHeight", self.layerHeight])
+        writer.writerow(["Tilemap", "LayerWidth", self.layerWidth])
+        writer.writerow(["Tilemap", "BlockingLayers"] + self.blockingLayers)
+        writer.writerow(["Tilemap", "BindingLayers"] + self.bindingLayers)
+
+    def ExportGraphData(self,writer):
+        # Export the basic graph data
+        # Indices
+        indices = self.outputDict[MapDataExtractor.KEY_WALKABLE].keys()
+        indices.sort()
+        # Split it into chunks
+        chunkCount = 0
+        chunks = [indices[x:x + MapDataExtractor.CSV_EXPORT_COLUMNS]
+                  for x in xrange(0, len(indices), MapDataExtractor.CSV_EXPORT_COLUMNS)]
+        for chunk in chunks:
+            chunkCount += len(chunk)
+            writer.writerow(["Graph", "Indices"] + chunk)
+        if chunkCount != len(indices):
+            return self.FatalError("Chunk count = %d, but index count = %d!!!" % (chunkCount, len(indices)))
+        # Adjacency
+        adj = self.outputDict[MapDataExtractor.KEY_ADJACENCY]
+        adjIdx = adj.keys()
+        adjIdx.sort()
+        for srcIdx in adjIdx:
+            srcRoom = adj[srcIdx][0]
+            for desIdx, edgeType in adj[srcIdx][1]:
+                desRoom = adj[desIdx][0]
+                writer.writerow(["Graph", "Adjacent", srcIdx, desIdx, srcRoom, desRoom, edgeType])
+
+    def ExportRoomData(self,writer):
+        # Export the Room Indices
+        roomDict = self.outputDict[MapDataExtractor.KEY_ROOMS]
+        rooms = roomDict.keys()
+        rooms.sort()
+        for room in rooms:
+            indices = roomDict[room][:]
+            indices.sort()
+            chunkCount = 0
+            chunks = [indices[x:x + MapDataExtractor.CSV_EXPORT_COLUMNS]
+                      for x in xrange(0, len(indices), MapDataExtractor.CSV_EXPORT_COLUMNS)]
+            for chunk in chunks:
+                chunkCount += len(chunk)
+                writer.writerow(["Room", "Indices", room] + chunk)
+            if chunkCount != len(indices):
+                return self.FatalError("Chunk count = %d, but index count = %d!!!" % (chunkCount, len(indices)))
+    def ExportObjectData(self,writer):
+        subjects = self.outputDict[MapDataExtractor.KEY_OBJECTS]
+        keys = subjects.keys()
+        keys.sort()
+        for key in keys:
+            objType, indices, binding = subjects[key]
+            writer.writerow(["Object", "Define", key, objType])
+            writer.writerow(["Object", "Indices", key] + indices)
+            writer.writerow(["Object", "Binding", key] + binding)
+
+
+    def ExportData(self):
+        with open(self.outFile, 'wb') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["PKey","SKey","Parameters"])
+            # Basic Tilemap parameters
+            self.ExportTilemapData(writer)
+            # Nodes and Adjacency
+            self.ExportGraphData(writer)
+            # Rooms
+            self.ExportRoomData(writer)
+            # Objects
+            self.ExportObjectData(writer)
+
+            return True
+        return False
 
     def CheckInputs(self):
         if self.doorLayer not in self.layerMap:
@@ -507,22 +608,26 @@ class MapDataExtractor(object):
                    wallLayer,
                    doorLayer,
                    navPrefix,
-                   outPrefix,
+                   outFile,
                    excludeLayers,
                    blockingLayers,
-                   bindLayers,
-                   verbose):
+                   bindingLayers,
+                   diagonalEdges,
+                   verbose,
+                   reallyVerbose):
         # Cache inputs
         self.tiledFile = tiledFile
         self.floorLayer = floorLayer
         self.doorLayer = doorLayer
         self.wallLayer = wallLayer
         self.navPrefix = navPrefix
-        self.outPrefix = outPrefix
+        self.outFile = outFile
         self.excludeLayers = excludeLayers
         self.blockingLayers = blockingLayers
-        self.bindLayers = bindLayers
+        self.bindingLayers = bindingLayers
         self.verbose = verbose
+        self.diagonalEdges = diagonalEdges
+        self.reallyVerbose = reallyVerbose
 
         # Pull in the tile map.
         if not self.LoadTiledMap(tiledFile):
@@ -543,6 +648,9 @@ class MapDataExtractor(object):
         if not self.ExtractAdjacencyData():
             return False
 
+        if not self.ExportData():
+            return False
+
         return True
 
 if __name__ == "__main__":
@@ -551,9 +659,11 @@ if __name__ == "__main__":
     # test arguments are inserted.
 
     # Some temporary Arguments
+    """
     arguments["<tiledFile>"] = "tiled.tmx"
     arguments["--verbose"] = True
-    arguments["--bind"] = ["Activators"]
+    arguments["--binding"] = ["Activators"]
+    """
 
     # It is a good idea to print these out so you
     # can see if you typed in something incorrectly.
@@ -570,13 +680,15 @@ if __name__ == "__main__":
     tiledFile = arguments["<tiledFile>"]
     excludeLayers = arguments["--exclude"]
     blockingLayers = arguments["--blocking"]
-    bindLayers = arguments["--bind"]
+    bindingLayers = arguments["--binding"]
     doorLayer = arguments["--doorLayer"]
     wallLayer = arguments["--wallLayer"]
     floorLayer = arguments["--floorLayer"]
     navPrefix = arguments["--navPrefix"]
-    outPrefix = arguments["--outPrefix"]
-    verbose = arguments["--verbose"]
+    outFile = arguments["--outFile"]
+    reallyVerbose = arguments['--reallyVerbose']
+    verbose = arguments["--verbose"] or reallyVerbose
+    diagonalEdges = not arguments["--noDiagonalEdges"]
 
     extractor = MapDataExtractor()
     extractor.ProcessMap(tiledFile,
@@ -584,9 +696,11 @@ if __name__ == "__main__":
                          wallLayer,
                          doorLayer,
                          navPrefix,
-                         outPrefix,
+                         outFile,
                          excludeLayers,
                          blockingLayers,
-                         bindLayers,
-                         verbose
+                         bindingLayers,
+                         diagonalEdges,
+                         verbose,
+                         reallyVerbose
                          )
